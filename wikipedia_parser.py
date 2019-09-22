@@ -12,6 +12,8 @@ from sys import getsizeof
 from collections import namedtuple, Counter, defaultdict, OrderedDict
 
 UnparsedRawPage = namedtuple("UnparsedRawPage", ["id", "title", "redirect", "text"])
+ParsedRawPage = namedtuple("ParsedRawPage", ["id", "title", "redirect", "links"])
+WikipediaCanonicalPage = namedtuple("WikipediaCanonicalPage", ["id", "title", "aliases", "links", "inlinks"])
 
 
 class WikiXMLHandler(xml.sax.ContentHandler):
@@ -135,15 +137,15 @@ class WikiXMLHandler(xml.sax.ContentHandler):
             print(f"Made it to {self.page_title} ({self.page_count}) in {delta}s ({self.page_count / delta})pps")
 
 
-class ParsedRawPage(namedtuple("ParsedRawPage", ["id", "title", "redirect", "links"])):
+class WikipediaDumpParser:
     @classmethod
-    def dump_pages(cls, pages, path):
+    def dump_parsed_pages(cls, pages, path):
         with open(path, "wb") as f:
             for page in pages:
                 f.write(msgpack.packb(page, use_bin_type=True))
 
     @classmethod
-    def read_pages(cls, path):
+    def read_parsed_pages(cls, path):
         with open(path, "rb") as f:
             unpacker = msgpack.Unpacker(f, raw=False, use_list=False, max_map_len=1024 ** 2)
             for (id, title, redirect, links) in unpacker:
@@ -160,7 +162,7 @@ class ParsedRawPage(namedtuple("ParsedRawPage", ["id", "title", "redirect", "lin
                     return
 
                 parsed = wtp.parse(unparsed_page.text)
-                page = cls(
+                page = ParsedRawPage(
                     unparsed_page.id,
                     unparsed_page.title,
                     unparsed_page.redirect,
@@ -206,7 +208,7 @@ class ParsedRawPage(namedtuple("ParsedRawPage", ["id", "title", "redirect", "lin
             raise
 
 
-class WikipediaPage(namedtuple("WikipediaPage", ["id", "title", "aliases", "links", "inlinks"])):
+class WikipediaCanonicalPageResolver:
     @classmethod
     def dump_pages(cls, pages, path):
         with open(path, "wb") as f:
@@ -218,7 +220,7 @@ class WikipediaPage(namedtuple("WikipediaPage", ["id", "title", "aliases", "link
         with open(path, "rb") as f:
             unpacker = msgpack.Unpacker(f, raw=False, use_list=False, max_map_len=1024 ** 2)
             for (id, title, aliases, links, inlinks) in unpacker:
-                yield WikipediaPage(id, title, set(aliases), Counter(links), Counter(inlinks))
+                yield cls(id, title, set(aliases), Counter(links), Counter(inlinks))
 
     @classmethod
     def resolve_parsed_pages(cls, parsed_pages):
@@ -229,7 +231,7 @@ class WikipediaPage(namedtuple("WikipediaPage", ["id", "title", "aliases", "link
             if p.redirect:
                 redirects[p.title] = p.redirect
             else:
-                title_to_wikipedia_page[p.title] = WikipediaPage(
+                title_to_wikipedia_page[p.title] = WikipediaCanonicalPage(
                     id=p.id, title=p.title, aliases=set(), links=p.links.copy(), inlinks=Counter()
                 )
 
@@ -265,9 +267,10 @@ class WikipediaPage(namedtuple("WikipediaPage", ["id", "title", "aliases", "link
 
         t = circle_count + unresolvable_count + resolved_count
         assert t == len(redirects), "Not tautology with all redirects"
-        print(
-            f"Resolved {resolved_count} ({resolved_count / t}) redirects with {circle_count} ({circle_count / t}) cycles and {unresolvable_count} ({unresolvable_count / t}) unresolvables"
-        )
+        if t > 0:
+            print(
+                f"Resolved {resolved_count} ({resolved_count / t}) redirects with {circle_count} ({circle_count / t}) cycles and {unresolvable_count} ({unresolvable_count / t}) unresolvables"
+            )
 
         print("Resolving deepest links")
         bad_link_count = 0
@@ -311,9 +314,10 @@ class WikipediaPage(namedtuple("WikipediaPage", ["id", "title", "aliases", "link
             p.links.update(resolved_links)
 
         t = good_link_count + bad_link_count
-        print(
-            f"Found {good_link_count} ({good_link_count / t}) good links and {bad_link_count} ({bad_link_count / t}) bad links and {file_count} ({file_count / t}) file links"
-        )
+        if t > 0:
+            print(
+                f"Found {good_link_count} ({good_link_count / t}) good links and {bad_link_count} ({bad_link_count / t}) bad links and {file_count} ({file_count / t}) file links"
+            )
 
         while True:
             try:

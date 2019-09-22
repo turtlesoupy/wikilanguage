@@ -1,5 +1,5 @@
 from wikidata_parser import WikiDataParser
-from wikipedia_parser import ParsedRawPage
+from wikipedia_parser import WikipediaDumpParser, WikipediaCanonicalPageResolver
 
 
 def store_wikidata_dump(input_path, write_path, whitelisted_wikis=None):
@@ -8,9 +8,9 @@ def store_wikidata_dump(input_path, write_path, whitelisted_wikis=None):
 
 def store_wikipedia_pages(input_path, write_path, limit=None):
     print("Parsing raw pages")
-    raw_pages = ParsedRawPage.parsed_wikipedia_pages(input_path, limit=limit)
+    raw_pages = WikipediaDumpParser.parsed_wikipedia_pages(input_path, limit=limit)
     print("Parsed! Resolving links")
-    wiki_pages = list(WikipediaPage.resolve_parsed_pages(raw_pages))
+    wiki_pages = list(WikipediaCanonicalPageResolver.resolve_parsed_pages(raw_pages))
     wiki_pages.sort(key=lambda x: x.title)
     print("Writing results")
-    WikipediaPage.dump_pages(wiki_pages, write_path)
+    WikipediaCanonicalPageResolver.dump_pages(wiki_pages, write_path)
