@@ -58,6 +58,8 @@ class WikipediaCanonicalPage:
     aliases: Set
     links: Counter
     inlinks: Counter
+    pagerank: Optional[float]
+    pagerank_percentile: Optional[float]
 
     @classmethod
     def dump_collection(cls, pages, path):
@@ -74,13 +76,23 @@ class WikipediaCanonicalPage:
 
     @classmethod
     def from_msgpack(cls, item):
-        (id, title, aliases, links, inlinks) = item
+        if len(item) == 5:
+            (id, title, aliases, links, inlinks) = item
+            pagerank = None
+            pagerank_percentile = None
+        elif len(item) == 7:
+            (id, title, aliases, links, inlinks, pagerank, pagerank_percentile) = item
+        else:
+            raise RuntimeError(f"Invalid WikipediaCanonicalPage read from msgpack: {item}")
+
         return cls(
             id,
             title,
             set(aliases),
             Counter(links),
             Counter(inlinks),
+            pagerank,
+            pagerank_percentile
         )
 
     def to_msgpack(self):
