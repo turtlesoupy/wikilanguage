@@ -10,7 +10,6 @@ from collections import namedtuple, Counter
 from typing import Set, Optional
 
 UnparsedRawPage = namedtuple("UnparsedRawPage", ["id", "title", "redirect", "text"])
-ParsedRawPage = namedtuple("ParsedRawPage", ["id", "title", "redirect", "links"])
 
 
 @dataclass
@@ -18,13 +17,26 @@ class ParsedRawPage:
     id: str
     title: str
     redirect: Optional[str]
-    text: str
+    links: Counter
+
+    @classmethod
+    def dump_collection(cls, pages, path):
+        with open(path, "wb") as f:
+            for page in pages:
+                f.write(page.to_msgpack())
+
+    @classmethod
+    def read_collection(cls, path):
+        with open(path, "rb") as f:
+            unpacker = msgpack.Unpacker(f, raw=False, use_list=False, max_map_len=1024 ** 2)
+            for item in unpacker:
+                yield cls.from_msgpack(item)
 
     @classmethod
     def from_msgpack(cls, item):
         id, title, redirect, links = item
         return cls(
-            id, title, redirect, links
+            id, title, redirect, Counter(links)
         )
 
     def to_msgpack(self):
@@ -48,6 +60,19 @@ class WikipediaCanonicalPage:
     inlinks: Counter
 
     @classmethod
+    def dump_collection(cls, pages, path):
+        with open(path, "wb") as f:
+            for page in pages:
+                f.write(page.to_msgpack())
+
+    @classmethod
+    def read_collection(cls, path):
+        with open(path, "rb") as f:
+            unpacker = msgpack.Unpacker(f, raw=False, use_list=False, max_map_len=1024 ** 2)
+            for item in unpacker:
+                yield WikipediaCanonicalPage.from_msgpack(item)
+
+    @classmethod
     def from_msgpack(cls, item):
         (id, title, aliases, links, inlinks) = item
         return cls(
@@ -65,7 +90,7 @@ class WikipediaCanonicalPage:
                 self.title,
                 list(self.aliases),
                 self.links,
-                self.inlinks
+                self.inlinks,
             ),
             use_bin_type=True
         )
@@ -194,19 +219,6 @@ class WikiXMLHandler(xml.sax.ContentHandler):
 
 class WikipediaDumpParser:
     @classmethod
-    def dump_parsed_pages(cls, pages, path):
-        with open(path, "wb") as f:
-            for page in pages:
-                f.write(page.to_msgpack())
-
-    @classmethod
-    def read_parsed_pages(cls, path):
-        with open(path, "rb") as f:
-            unpacker = msgpack.Unpacker(f, raw=False, use_list=False, max_map_len=1024 ** 2)
-            for item in unpacker:
-                yield ParsedRawPage.from_msgpack(item)
-
-    @classmethod
     def parsed_wikipedia_pages(cls, filename, limit=None, concurrency=None):
         concurrency = concurrency or multiprocessing.cpu_count() * 2
 
@@ -218,10 +230,10 @@ class WikipediaDumpParser:
 
                 parsed = wtp.parse(unparsed_page.text)
                 page = ParsedRawPage(
-                    unparsed_page.id,
-                    unparsed_page.title,
-                    unparsed_page.redirect,
-                    Counter(e.title.strip() for e in parsed.wikilinks),
+                    id=unparsed_page.id,
+                    title=unparsed_page.title,
+                    redirect=unparsed_page.redirect,
+                    links=Counter(e.title.strip() for e in parsed.wikilinks),
                 )
                 writer_queue.put(page)
 
@@ -265,19 +277,6 @@ class WikipediaDumpParser:
 
 class WikipediaCanonicalPageResolver:
     @classmethod
-    def dump_pages(cls, pages, path):
-        with open(path, "wb") as f:
-            for page in pages:
-                f.write(page.to_msgpack())
-
-    @classmethod
-    def read_pages(cls, path):
-        with open(path, "rb") as f:
-            unpacker = msgpack.Unpacker(f, raw=False, use_list=False, max_map_len=1024 ** 2)
-            for item in unpacker:
-                yield WikipediaCanonicalPage.from_msgpack(item)
-
-    @classmethod
     def resolve_parsed_pages(cls, parsed_pages):
         title_to_wikipedia_page = {}
         redirects = {}
@@ -287,7 +286,11 @@ class WikipediaCanonicalPageResolver:
                 redirects[p.title] = p.redirect
             else:
                 title_to_wikipedia_page[p.title] = WikipediaCanonicalPage(
-                    id=p.id, title=p.title, aliases=set(), links=p.links.copy(), inlinks=Counter()
+                    id=p.id,
+                    title=p.title,
+                    aliases=set(),
+                    links=p.links.copy(),
+                    inlinks=Counter(),
                 )
 
         # Making redirect chainer
