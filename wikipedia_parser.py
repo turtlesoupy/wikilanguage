@@ -1,19 +1,74 @@
+from dataclasses import dataclass
 import msgpack
-import json
-import pickle
 import xml.sax
 import wikitextparser as wtp
 import multiprocessing
-import sys
 import time
 import io
 import queue
-from sys import getsizeof
-from collections import namedtuple, Counter, defaultdict, OrderedDict
+from collections import namedtuple, Counter
+from typing import Set, Optional
 
 UnparsedRawPage = namedtuple("UnparsedRawPage", ["id", "title", "redirect", "text"])
 ParsedRawPage = namedtuple("ParsedRawPage", ["id", "title", "redirect", "links"])
-WikipediaCanonicalPage = namedtuple("WikipediaCanonicalPage", ["id", "title", "aliases", "links", "inlinks"])
+
+
+@dataclass
+class ParsedRawPage:
+    id: str
+    title: str
+    redirect: Optional[str]
+    text: str
+
+    @classmethod
+    def from_msgpack(cls, item):
+        id, title, redirect, links = item
+        return cls(
+            id, title, redirect, links
+        )
+
+    def to_msgpack(self):
+        return msgpack.packb(
+            (
+                self.id,
+                self.title,
+                self.redirect,
+                self.text,
+            ),
+            use_bin_type=True,
+        )
+
+
+@dataclass
+class WikipediaCanonicalPage:
+    id: str
+    title: str
+    aliases: Set
+    links: Counter
+    inlinks: Counter
+
+    @classmethod
+    def from_msgpack(cls, item):
+        (id, title, aliases, links, inlinks) = item
+        return cls(
+            id,
+            title,
+            set(aliases),
+            Counter(links),
+            Counter(inlinks),
+        )
+
+    def to_msgpack(self):
+        return msgpack.packb(
+            (
+                self.id,
+                self.title,
+                list(self.aliases),
+                self.links,
+                self.inlinks
+            ),
+            use_bin_type=True
+        )
 
 
 class WikiXMLHandler(xml.sax.ContentHandler):
@@ -47,16 +102,16 @@ class WikiXMLHandler(xml.sax.ContentHandler):
         self.element_count += 1
 
         if self.in_title:
-            raise RuntimeException(f"Encountered element {name} within a title")
+            raise RuntimeError(f"Encountered element {name} within a title")
         if self.in_revision_text:
-            raise RuntimeException(f"Encountered element {name} within revision text")
+            raise RuntimeError(f"Encountered element {name} within revision text")
 
         if self.in_id:
-            raise RuntimeException(f"Encountered element {name} within id")
+            raise RuntimeError(f"Encountered element {name} within id")
 
         if name == "page":
             if self.in_page:
-                raise RuntimeException("Recursive page")
+                raise RuntimeError("Recursive page")
 
             self.in_page = True
 
@@ -64,21 +119,21 @@ class WikiXMLHandler(xml.sax.ContentHandler):
 
             if name == "title":
                 if self.page_title:
-                    raise RuntimeException("Encountered a second title for the page!")
+                    raise RuntimeError("Encountered a second title for the page!")
 
                 self.in_title = True
                 self.title_buffer = io.StringIO()
 
             elif name == "redirect":
                 if self.page_redirect:
-                    raise RuntimeException(f"Already had a redirect for {self.page_title}")
+                    raise RuntimeError(f"Already had a redirect for {self.page_title}")
                 if attrs.getLength() != 1:
-                    raise RuntimeException(f"More than one redirect attribute for {self.page_title}")
+                    raise RuntimeError(f"More than one redirect attribute for {self.page_title}")
                 self.page_redirect = attrs.getValue("title")
 
             elif name == "revision":
                 if self.seen_page_revision:
-                    raise RuntimeException(f"Saw a second page revision for {self.page_title}")
+                    raise RuntimeError(f"Saw a second page revision for {self.page_title}")
 
                 self.in_revision = True
             elif self.in_revision and name == "text":
@@ -142,14 +197,14 @@ class WikipediaDumpParser:
     def dump_parsed_pages(cls, pages, path):
         with open(path, "wb") as f:
             for page in pages:
-                f.write(msgpack.packb(page, use_bin_type=True))
+                f.write(page.to_msgpack())
 
     @classmethod
     def read_parsed_pages(cls, path):
         with open(path, "rb") as f:
             unpacker = msgpack.Unpacker(f, raw=False, use_list=False, max_map_len=1024 ** 2)
-            for (id, title, redirect, links) in unpacker:
-                yield ParsedRawPage(id, title, redirect, Counter(links))
+            for item in unpacker:
+                yield ParsedRawPage.from_msgpack(item)
 
     @classmethod
     def parsed_wikipedia_pages(cls, filename, limit=None, concurrency=None):
@@ -201,7 +256,7 @@ class WikipediaDumpParser:
                         break
 
             return pages
-        except:
+        except Exception:
             print("Exception raised, terminating subprocesses")
             for p in processes:
                 p.terminate()
@@ -212,15 +267,15 @@ class WikipediaCanonicalPageResolver:
     @classmethod
     def dump_pages(cls, pages, path):
         with open(path, "wb") as f:
-            for (id, title, aliases, links, inlinks) in pages:
-                f.write(msgpack.packb((id, title, list(aliases), links, inlinks), use_bin_type=True))
+            for page in pages:
+                f.write(page.to_msgpack())
 
     @classmethod
     def read_pages(cls, path):
         with open(path, "rb") as f:
             unpacker = msgpack.Unpacker(f, raw=False, use_list=False, max_map_len=1024 ** 2)
-            for (id, title, aliases, links, inlinks) in unpacker:
-                yield cls(id, title, set(aliases), Counter(links), Counter(inlinks))
+            for item in unpacker:
+                yield WikipediaCanonicalPage.from_msgpack(item)
 
     @classmethod
     def resolve_parsed_pages(cls, parsed_pages):
@@ -269,7 +324,9 @@ class WikipediaCanonicalPageResolver:
         assert t == len(redirects), "Not tautology with all redirects"
         if t > 0:
             print(
-                f"Resolved {resolved_count} ({resolved_count / t}) redirects with {circle_count} ({circle_count / t}) cycles and {unresolvable_count} ({unresolvable_count / t}) unresolvables"
+                f"Resolved {resolved_count} ({resolved_count / t}) redirects"
+                f"with {circle_count} ({circle_count / t}) cycles and"
+                f"{unresolvable_count} ({unresolvable_count / t}) unresolvables"
             )
 
         print("Resolving deepest links")
@@ -316,7 +373,9 @@ class WikipediaCanonicalPageResolver:
         t = good_link_count + bad_link_count
         if t > 0:
             print(
-                f"Found {good_link_count} ({good_link_count / t}) good links and {bad_link_count} ({bad_link_count / t}) bad links and {file_count} ({file_count / t}) file links"
+                f"Found {good_link_count} ({good_link_count / t}) good links "
+                f"and {bad_link_count} ({bad_link_count / t}) bad links "
+                f"and {file_count} ({file_count / t}) file links"
             )
 
         while True:
