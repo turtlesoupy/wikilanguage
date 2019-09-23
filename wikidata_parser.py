@@ -70,7 +70,13 @@ class WikiDataParser:
         instances = claims["P31"]
         for instance in instances:
             value = cls.extract_snak_value(instance, "wikibase-entityid", title=title, line_id=line_id)
-            if "entity-type" in value and value["entity-type"] == "item" and "id" in value and value["id"] == "Q515":
+            if (
+                value is not None
+                and "entity-type" in value
+                and value["entity-type"] == "item"
+                and "id" in value
+                and value["id"] == "Q515"
+            ):
                 return True
 
         return False
@@ -82,6 +88,9 @@ class WikiDataParser:
 
         coordinates = claims["P625"]
         value = cls.extract_snak_value(coordinates[0], "globecoordinate", title=title, line_id=line_id)
+        if value is None:
+            return None
+
         return GlobeCoordinate(*(value[e] for e in ("latitude", "longitude", "altitude", "precision")))
 
     @classmethod
