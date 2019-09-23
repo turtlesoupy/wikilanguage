@@ -1,4 +1,5 @@
 import gzip
+import tempfile
 from pagerank import pagerank_with_percentiles
 from wikidata_parser import WikiDataParser
 from wikipedia_parser import WikipediaDumpParser, WikipediaCanonicalPageResolver, WikipediaCanonicalPage
@@ -18,18 +19,9 @@ def store_wikipedia_pages(input_path, write_path, limit=None):
     WikipediaCanonicalPage.dump_collection(wiki_pages, write_path)
 
 
-def store_wikidata(input_path, write_path, whitelisted_wikis=None, limit=None):
-    with gzip.open("/mnt/cold/Projects/data/latest-all.json.gz", mode="rt") as f:
-        wikidata = WikiDataParser.parse_dump(
-            f,
-            whitelisted_wikis=whitelisted_wikis,
-        )
-    wikidata.dump(write_path)
-
-
 def augment_with_pagerank(canonical_file, write_path, in_memory=True):
     if in_memory:
-        c = WikipediaCanonicalPage.read_collection(canonical_file)
+        c = list(WikipediaCanonicalPage.read_collection(canonical_file))
         def loader(): return c
     else:
         def loader(): return WikipediaCanonicalPage.read_collection(canonical_file)
@@ -42,3 +34,18 @@ def augment_with_pagerank(canonical_file, write_path, in_memory=True):
 
     WikipediaCanonicalPage.dump_collection(yielder(), write_path)
     print("All done!")
+
+
+def store_wiki_with_pagerank(input_path, write_path, limit=None, in_memory=True):
+    with tempfile.NamedTemporaryFile() as f:
+        store_wikipedia_pages(input_path, f.name, limit=limit)
+        augment_with_pagerank(f.name, write_path, in_memory=in_memory)
+
+
+def store_wikidata(input_path, write_path, whitelisted_wikis=None, limit=None):
+    with gzip.open("/mnt/cold/Projects/data/latest-all.json.gz", mode="rt") as f:
+        wikidata = WikiDataParser.parse_dump(
+            f,
+            whitelisted_wikis=whitelisted_wikis,
+        )
+    wikidata.dump(write_path)

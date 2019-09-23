@@ -305,6 +305,8 @@ class WikipediaCanonicalPageResolver:
                     aliases=set(),
                     links=p.links.copy(),
                     inlinks=Counter(),
+                    pagerank=None,
+                    pagerank_percentile=None,
                 )
 
         # Making redirect chainer
