@@ -27,3 +27,4 @@ def augment_with_pagerank(canonical_file, write_path):
             yield page
 
     WikipediaCanonicalPage.dump_collection(yielder(), write_path)
+    print("All done!")

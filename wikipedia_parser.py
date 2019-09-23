@@ -103,6 +103,8 @@ class WikipediaCanonicalPage:
                 list(self.aliases),
                 self.links,
                 self.inlinks,
+                self.pagerank,
+                self.pagerank_percentile,
             ),
             use_bin_type=True
         )
