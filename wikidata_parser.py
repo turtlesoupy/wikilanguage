@@ -3,10 +3,35 @@ import time
 import pickle
 from itertools import zip_longest
 from collections import namedtuple
+from dataclasses import dataclass
+from typing import Optional
 
 
 GlobeCoordinate = namedtuple("GlobeCoordinate", ["latitude", "longitude", "altitude", "precision"])
-WikiDataEntry = namedtuple("WikiDataEntry", ["id", "sample_name", "sitelinks", "sample_coord"])
+
+
+@dataclass
+class WikiDataEntry:
+    id: str
+    sample_name: str
+    sample_coord: Optional[GlobeCoordinate]
+    instance_of_city: bool
+
+
+class WikiData:
+    def __init__(self, wiki_title_to_id, id_to_entry):
+        self.wiki_title_to_id = wiki_title_to_id
+        self.id_to_entry = id_to_entry
+
+    def wikidata_id(self, wikiname, title):
+        return self.wiki_title_to_id[wikiname][title]
+
+    @classmethod
+    def load(cls, path):
+        return pickle.load(open(path, "rb"))
+
+    def dump(self, path):
+        pickle.dump(self, open(path, "wb"), protocol=pickle.HIGHEST_PROTOCOL)
 
 
 def grouper(n, iterable, padvalue=None):
@@ -15,12 +40,40 @@ def grouper(n, iterable, padvalue=None):
 
 
 class WikiDataParser:
-    @classmethod
-    def load(cls, path):
-        return pickle.load(open(path, "rb"))
 
-    def dump(self, path):
-        pickle.dump(self, open(path, "wb"), protocol=pickle.HIGHEST_PROTOCOL)
+    @classmethod
+    def extract_snak_value(cls, item, expected_value_type, title="", line_id=""):
+        if "mainsnak" not in item:
+            raise RuntimeError(f"({line_id} {title}) Main snak not found in item {item}")
+
+        mainsnak = item["mainsnak"]
+        if "snaktype" not in mainsnak:
+            raise RuntimeError(f"({line_id} {title}) Main snak missing snaktype")
+
+        if mainsnak["snaktype"] != "value":
+            return None
+
+        if "datavalue" not in mainsnak:
+            raise RuntimeError(f"({line_id} {title}) Main snak of value type without data value")
+
+        datavalue = mainsnak["datavalue"]
+        if "type" not in datavalue or datavalue["type"] != expected_value_type:
+            raise RuntimeError(f"({line_id} {title}) Expected type {expected_value_type} in {datavalue}")
+
+        return datavalue["value"]
+
+    @classmethod
+    def parse_instance_of_city(cls, claims, title="", line_id=""):
+        if "P31" not in claims:
+            return False
+
+        instances = claims["P31"]
+        for instance in instances:
+            value = cls.extract_snak_value(instance, "wikibase-entityid", title=title, line_id=line_id)
+            if "entity-type" in value and value["entity-type"] == "item" and "id" in value and value["id"] == "Q515":
+                return True
+
+        return False
 
     @classmethod
     def parse_globe_coordinate(cls, claims, title="", line_id=""):
@@ -28,37 +81,11 @@ class WikiDataParser:
             return None
 
         coordinates = claims["P625"]
-        # if len(coordinates) != 1:
-        #    print(json.dumps(coordinates, indent=2))
-        #    raise RuntimeError(f"({title}) Found item with more than one co-ordinate")
-
-        coordinate = coordinates[0]
-        if "mainsnak" not in coordinate:
-            print(coordinate)
-            raise RuntimeError(f"({line_id} {title}) Main snak not found in co-ordinate")
-
-        mainsnak = coordinate["mainsnak"]
-        if "snaktype" not in mainsnak:
-            print(mainsnak)
-            raise RuntimeError(f"({line_id} {title}) Main snak snaktype")
-
-        if mainsnak["snaktype"] != "value":
-            return None
-
-        if "datavalue" not in mainsnak:
-            print(mainsnak)
-            raise RuntimeError(f"({line_id} {title}) Main snak without data value")
-
-        datavalue = mainsnak["datavalue"]
-        if "type" not in datavalue or datavalue["type"] != "globecoordinate":
-            print(datavalue)
-            raise RuntimeError(f"({line_id} {title}) Bad data type for globe coordinate")
-
-        value = datavalue["value"]
+        value = cls.extract_snak_value(coordinates[0], "globecoordinate", title=title, line_id=line_id)
         return GlobeCoordinate(*(value[e] for e in ("latitude", "longitude", "altitude", "precision")))
 
     @classmethod
-    def parse_dump(cls, path, whitelisted_wikis=None):
+    def parse_dump(cls, input_stream, whitelisted_wikis=None, limit=None):
         wiki_title_to_id = {}
         id_to_entry = {}
         start = time.time()
@@ -66,7 +93,7 @@ class WikiDataParser:
 
         whitelisted_wikis = whitelisted_wikis and set(whitelisted_wikis)
 
-        for i, line in enumerate(open(path)):
+        for i, line in enumerate(input_stream):
             if not line.startswith("{"):
                 continue
 
@@ -89,7 +116,8 @@ class WikiDataParser:
                 print(loaded)
                 raise RuntimeError("No sitelinks found in entry")
 
-            sitelinks = {}
+            english_title = None
+            sample_title = None
 
             for wiki, v in loaded["sitelinks"].items():
                 if whitelisted_wikis is not None and wiki not in whitelisted_wikis:
@@ -99,17 +127,24 @@ class WikiDataParser:
                 if wiki not in wiki_title_to_id:
                     wiki_title_to_id[wiki] = {}
 
-                sitelinks[wiki] = title
+                if wiki == "enwiki":
+                    english_title = title
+
+                sample_title = title
+
                 wiki_title_to_id[wiki][title] = line_id
 
-            try:
-                sample_title = sitelinks["enwiki"] if "enwiki" in sitelinks else next(iter(sitelinks.values()))
-            except StopIteration:
-                sample_title = None
+            sample_title = english_title or sample_title
+            claims = loaded["claims"]
+            sample_coord = cls.parse_globe_coordinate(claims, sample_title, line_id)
+            instance_of_city = cls.parse_instance_of_city(claims)
 
-            sample_coord = cls.parse_globe_coordinate(loaded["claims"], sample_title, line_id)
-
-            entry = WikiDataEntry(line_id, sample_title, sitelinks, sample_coord)
+            entry = WikiDataEntry(
+                line_id,
+                sample_title,
+                sample_coord,
+                instance_of_city=instance_of_city
+            )
             id_to_entry[line_id] = entry
 
             if i % 10000 == 0:
@@ -119,11 +154,7 @@ class WikiDataParser:
                     f"({i / (end - start)} lines per second)"
                 )
 
-        return cls(wiki_title_to_id, id_to_entry)
+            if limit and i >= limit:
+                break
 
-    def __init__(self, wiki_title_to_id, id_to_entry):
-        self.wiki_title_to_id = wiki_title_to_id
-        self.id_to_entry = id_to_entry
-
-    def wikidata_id(self, wikiname, title):
-        return self.wiki_title_to_id[wikiname][title]
+        return WikiData(wiki_title_to_id, id_to_entry)

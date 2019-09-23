@@ -1,3 +1,4 @@
+import gzip
 from pagerank import pagerank_with_percentiles
 from wikidata_parser import WikiDataParser
 from wikipedia_parser import WikipediaDumpParser, WikipediaCanonicalPageResolver, WikipediaCanonicalPage
@@ -17,11 +18,24 @@ def store_wikipedia_pages(input_path, write_path, limit=None):
     WikipediaCanonicalPage.dump_collection(wiki_pages, write_path)
 
 
-def augment_with_pagerank(canonical_file, write_path):
+def store_wikidata(input_path, write_path, whitelisted_wikis=None, limit=None):
+    with gzip.open("/mnt/cold/Projects/data/latest-all.json.gz", mode="rt") as f:
+        wikidata = WikiDataParser.parse_dump(
+            f,
+            whitelisted_wikis=whitelisted_wikis,
+        )
+    wikidata.dump(write_path)
+
+
+def augment_with_pagerank(canonical_file, write_path, in_memory=True):
+    if in_memory:
+        c = WikipediaCanonicalPage.read_collection(canonical_file)
+        def loader(): return c
+    else:
+        def loader(): return WikipediaCanonicalPage.read_collection(canonical_file)
+
     def yielder():
-        for page, pr, pr_percentile in pagerank_with_percentiles(
-            lambda: WikipediaCanonicalPage.read_collection(canonical_file)
-        ):
+        for page, pr, pr_percentile in pagerank_with_percentiles(loader):
             page.pagerank = pr
             page.pagerank_percentile = pr_percentile
             yield page

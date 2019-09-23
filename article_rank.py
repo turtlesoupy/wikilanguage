@@ -9,6 +9,11 @@ class ArticleRank:
         cls, wikidata, from_wikiname, from_articles, to_wikiname, to_articles,
         wikidata_predicate=lambda x: True
     ):
+        if from_wikiname not in wikidata.wiki_title_to_id:
+            raise RuntimeError(f"Wikidata doesn't contain '{from_wikiname}'")
+        if to_wikiname not in wikidata.wiki_title_to_id:
+            raise RuntimeError(f"Wikidata doesn't contain '{to_wikiname}'")
+
         common_articles = {
             v: [None, None] for v in itertools.chain(
                 wikidata.wiki_title_to_id[from_wikiname].values(),
