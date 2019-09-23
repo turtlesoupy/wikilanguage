@@ -5,12 +5,15 @@ import itertools
 
 
 class ArticleRank:
-    def _find_common_articles(cls, wikidata, from_wikiname, from_articles, to_wikiname, to_articles):
+    def _find_common_articles(
+        cls, wikidata, from_wikiname, from_articles, to_wikiname, to_articles,
+        wikidata_predicate=lambda x: True
+    ):
         common_articles = {
             v: [None, None] for v in itertools.chain(
-                wikidata.wiki_title_to_id[from_wikiname],
-                wikidata.wiki_title_to_id[to_wikiname],
-            )
+                wikidata.wiki_title_to_id[from_wikiname].values(),
+                wikidata.wiki_title_to_id[to_wikiname].values(),
+            ) if wikidata_predicate(wikidata.id_to_entry[v])
         }
 
         num_common_article_candidates = len(common_articles)
@@ -86,9 +89,12 @@ class ArticleRank:
         return common_articles
 
     @classmethod
-    def kl_divergence_rank(cls, wikidata, from_wikiname, from_articles, to_wikiname, to_articles):
+    def kl_divergence_rank(
+        cls, wikidata, from_wikiname, from_articles, to_wikiname, to_articles,
+        wikidata_predicate=lambda x: True,
+    ):
         common_articles = cls._find_common_articles(
-            wikidata, from_wikiname, from_articles, to_wikiname, to_articles
+            wikidata, from_wikiname, from_articles, to_wikiname, to_articles, wikidata_predicate
         )
 
         from_prs = np.zeros(len(common_articles))
@@ -106,12 +112,12 @@ class ArticleRank:
         to_prs /= np.sum(to_prs)
 
         kl = scipy.special.kl_div(from_prs, to_prs)
-        ranks = scipy.stats.rankdata(kl) / len(kl)
+        kl_ranks = scipy.stats.rankdata(kl) / len(kl)
 
         return sorted(
             (
-                (kl_div, rank, from_article, to_article)
-                for (kl_div, rank, (from_article, to_article)) in zip(kl, ranks, common_articles.values())
+                (kl_div, kl_rank, from_article, to_article)
+                for (kl_div, kl_rank, (from_article, to_article)) in zip(kl, kl_ranks, common_articles.values())
 
             ),
             key=lambda x: x[0],
