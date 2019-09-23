@@ -1,7 +1,6 @@
 import ujson as json
 import time
 import pickle
-import sys
 from itertools import zip_longest
 from collections import namedtuple
 
@@ -116,7 +115,8 @@ class WikiDataParser:
             if i % 10000 == 0:
                 end = time.time()
                 print(
-                    f"Reached {i} in {end - start}s [{100 * all_json_time / (end - start)}% in json] ({i / (end - start)} lines per second)"
+                    f"Reached {i} in {end - start}s [{100 * all_json_time / (end - start)}% in json]"
+                    f"({i / (end - start)} lines per second)"
                 )
 
         return cls(wiki_title_to_id, id_to_entry)
@@ -124,3 +124,6 @@ class WikiDataParser:
     def __init__(self, wiki_title_to_id, id_to_entry):
         self.wiki_title_to_id = wiki_title_to_id
         self.id_to_entry = id_to_entry
+
+    def wikidata_id(self, wikiname, title):
+        return self.wiki_title_to_id[wikiname][title]

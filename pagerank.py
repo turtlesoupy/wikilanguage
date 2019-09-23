@@ -1,4 +1,5 @@
 import numpy as np
+import scipy.stats
 import graph_tool
 import graph_tool.centrality
 
@@ -41,7 +42,7 @@ def pagerank_with_percentiles(canonical_collection_fn):
         pr for (_, pr) in pagerank(canonical_collection_fn)
     ))
     print("Computing percentiles!")
-    percentiles = (len(pageranks) - np.argsort(pageranks)) / len(pageranks) if len(pageranks) > 0 else [1.0]
+    percentiles = scipy.stats.rankdata(pageranks) / len(pageranks) if len(pageranks) > 0 else [1.0]
     print("Done... yielding pages with percentiles")
 
     for item in zip(canonical_collection_fn(), pageranks, percentiles):
