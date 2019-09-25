@@ -1,21 +1,13 @@
+import pygtrie
 import ujson as json
 import time
 import pickle
 from itertools import zip_longest
 from collections import namedtuple
-from dataclasses import dataclass
-from typing import Optional
 
 
 GlobeCoordinate = namedtuple("GlobeCoordinate", ["latitude", "longitude", "altitude", "precision"])
-
-
-@dataclass
-class WikiDataEntry:
-    id: str
-    sample_name: str
-    sample_coord: Optional[GlobeCoordinate]
-    instance_of_city: bool
+WikiDataEntry = namedtuple("WikiDataEntry", ["id", "sample_coord", "instance_of_city"])
 
 
 class WikiData:
@@ -25,6 +17,11 @@ class WikiData:
 
     def wikidata_id(self, wikiname, title):
         return self.wiki_title_to_id[wikiname][title]
+
+    def restrict_to_wikis(self, valid_wikis):
+        for wiki in list(self.wiki_title_to_id.keys()):
+            if wiki not in valid_wikis:
+                del self.wiki_title_to_id[wiki]
 
     @classmethod
     def load(cls, path):
@@ -96,7 +93,7 @@ class WikiDataParser:
     @classmethod
     def parse_dump(cls, input_stream, whitelisted_wikis=None, limit=None):
         wiki_title_to_id = {}
-        id_to_entry = {}
+        id_to_entry = pygtrie.StringTrie()
         start = time.time()
         all_json_time = 0
 
@@ -134,7 +131,7 @@ class WikiDataParser:
 
                 title = v["title"]
                 if wiki not in wiki_title_to_id:
-                    wiki_title_to_id[wiki] = {}
+                    wiki_title_to_id[wiki] = pygtrie.StringTrie()
 
                 if wiki == "enwiki":
                     english_title = title
@@ -144,13 +141,15 @@ class WikiDataParser:
                 wiki_title_to_id[wiki][title] = line_id
 
             sample_title = english_title or sample_title
+            if sample_title is None:
+                continue
+
             claims = loaded["claims"]
             sample_coord = cls.parse_globe_coordinate(claims, sample_title, line_id)
             instance_of_city = cls.parse_instance_of_city(claims)
 
             entry = WikiDataEntry(
                 line_id,
-                sample_title,
                 sample_coord,
                 instance_of_city=instance_of_city
             )

@@ -14,6 +14,8 @@ UnparsedRawPage = namedtuple("UnparsedRawPage", ["id", "title", "redirect", "tex
 
 @dataclass
 class ParsedRawPage:
+    __slots__ = ['id', 'title', 'redirect', 'links']
+
     id: str
     title: str
     redirect: Optional[str]
@@ -53,6 +55,8 @@ class ParsedRawPage:
 
 @dataclass
 class WikipediaCanonicalPage:
+    __slots__ = ['id', 'title', 'aliases', 'links', 'inlinks', 'pagerank', 'pagerank_percentile']
+
     id: str
     title: str
     aliases: Set
@@ -68,14 +72,16 @@ class WikipediaCanonicalPage:
                 f.write(page.to_msgpack())
 
     @classmethod
-    def read_collection(cls, path):
+    def read_collection(cls, path, limit=None, skip_keys=()):
         with open(path, "rb") as f:
             unpacker = msgpack.Unpacker(f, raw=False, use_list=False, max_map_len=1024 ** 2)
-            for item in unpacker:
-                yield WikipediaCanonicalPage.from_msgpack(item)
+            for i, item in enumerate(unpacker):
+                yield WikipediaCanonicalPage.from_msgpack(item, skip_keys=skip_keys)
+                if limit and i >= limit:
+                    break
 
     @classmethod
-    def from_msgpack(cls, item):
+    def from_msgpack(cls, item, skip_keys=()):
         if len(item) == 5:
             (id, title, aliases, links, inlinks) = item
             pagerank = None
@@ -87,12 +93,12 @@ class WikipediaCanonicalPage:
 
         return cls(
             id,
-            title,
-            set(aliases),
-            Counter(links),
-            Counter(inlinks),
-            pagerank,
-            pagerank_percentile
+            title if "title" not in skip_keys else None,
+            set(aliases) if "aliases" not in skip_keys else None,
+            Counter(links) if "links" not in skip_keys else None,
+            Counter(inlinks) if "inlinks" not in skip_keys else None,
+            pagerank if "pagerank" not in skip_keys else None,
+            pagerank_percentile if "pagerank_percentile" not in skip_keys else None,
         )
 
     def to_msgpack(self):
