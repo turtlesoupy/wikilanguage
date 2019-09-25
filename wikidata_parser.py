@@ -160,27 +160,15 @@ class WikiDataParser:
         num_edges = 0
         start = time.time()
 
-        for i, line in enumerate(input_stream):
-            if limit and i >= limit:
-                break
-
-            if i % 10000 == 0:
-                delta = time.time() - start
-                print(
-                    f"Reached line {i} with {len(line_id_to_idx)} properties and {num_edges} edges"
-                    f" @ {delta}s ({i / delta} LPS)"
-                )
-
-            if not line.startswith("{"):
-                continue
-
+        def process_line(line):
+            nonlocal current_property_idx, line_id_to_idx, line_id_to_label, num_edges
             loaded = json.loads(line.rstrip(",\n"))
 
             line_type = loaded["type"]
             line_id = loaded["id"]
 
             if line_type == "property":
-                continue
+                return
 
             if line_type != "item":
                 raise RuntimeError("Found non-item line")
@@ -198,7 +186,7 @@ class WikiDataParser:
             claims = loaded["claims"]
 
             if WikiDataProperties.SUBCLASS_OF not in claims:
-                continue
+                return
 
             superclasses = claims[WikiDataProperties.SUBCLASS_OF]
             for superclass in superclasses:
@@ -216,6 +204,22 @@ class WikiDataParser:
 
                     g.add_edge(line_id_to_idx[superclass_id], line_id_to_idx[line_id])
                     num_edges += 1
+
+        for i, line in enumerate(input_stream):
+            if limit and i >= limit:
+                break
+
+            if i % 10000 == 0:
+                delta = time.time() - start
+                print(
+                    f"Reached line {i} with {len(line_id_to_idx)} properties and {num_edges} edges"
+                    f" @ {delta}s ({i / delta} LPS)"
+                )
+
+            if not line.startswith("{"):
+                continue
+
+            process_line(line)
 
         return WikiDataInheritanceGraph(line_id_to_idx, line_id_to_label, g)
 
