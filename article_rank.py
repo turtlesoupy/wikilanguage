@@ -20,8 +20,13 @@ def kl_calc(p, q):
 class ArticleRank:
     @classmethod
     def find_common_articles(
-        cls, wikidata, from_wikiname, from_articles, to_wikiname, to_articles,
-        wikidata_predicate=lambda x: True
+        cls,
+        wikidata,
+        from_wikiname,
+        from_articles,
+        to_wikiname,
+        to_articles,
+        wikidata_predicate=lambda x: True,
     ):
         if from_wikiname not in wikidata.wiki_title_to_id:
             raise RuntimeError(f"Wikidata doesn't contain '{from_wikiname}'")
@@ -29,10 +34,14 @@ class ArticleRank:
             raise RuntimeError(f"Wikidata doesn't contain '{to_wikiname}'")
 
         common_articles = {
-            v: [None, None] for v in itertools.chain(
-                wikidata.wiki_title_to_id[from_wikiname].itervalues(),  # These use a trie
+            v: [None, None]
+            for v in itertools.chain(
+                wikidata.wiki_title_to_id[
+                    from_wikiname
+                ].itervalues(),  # These use a trie
                 wikidata.wiki_title_to_id[to_wikiname].itervalues(),  # These use a trie
-            ) if wikidata_predicate(wikidata.id_to_entry[v])
+            )
+            if wikidata_predicate(wikidata.id_to_entry[v])
         }
 
         num_common_article_candidates = len(common_articles)
@@ -99,7 +108,9 @@ class ArticleRank:
             else:
                 found_both += 1
 
-        num_common_article_candidates = 1 if num_common_article_candidates == 0 else num_common_article_candidates
+        num_common_article_candidates = (
+            1 if num_common_article_candidates == 0 else num_common_article_candidates
+        )
         print(
             f"Filtered to {found_both} candidates ({found_both / num_common_article_candidates}) with \n"
             f"\t{found_one_but_not_two} ({found_one_but_not_two / num_common_article_candidates}) "
@@ -113,7 +124,9 @@ class ArticleRank:
             del common_articles[wikidata_id]
         del del_list
 
-        assert len(common_articles) == found_both, "Should only contain valid articles from both wikis"
+        assert (
+            len(common_articles) == found_both
+        ), "Should only contain valid articles from both wikis"
 
         return common_articles
 
@@ -128,8 +141,12 @@ class ArticleRank:
             from_prs[i] = from_article.pagerank
             to_prs[i] = to_article.pagerank
 
-            assert from_article.pagerank > 0, f"Found zero page-rank in {from_wikiname}'s {from_article.title}"
-            assert to_article.pagerank > 0, f"Found zero page-rank in {to_wikiname}'s {to_article.title}"
+            assert (
+                from_article.pagerank > 0
+            ), f"Found zero page-rank in {from_wikiname}'s {from_article.title}"
+            assert (
+                to_article.pagerank > 0
+            ), f"Found zero page-rank in {to_wikiname}'s {to_article.title}"
 
         # Normalize to coherent probability distribution
         from_prs /= np.sum(from_prs)
@@ -151,8 +168,9 @@ class ArticleRank:
         return sorted(
             (
                 (kl_div, kl_rank, from_article, to_article)
-                for (kl_div, kl_rank, (from_article, to_article)) in zip(kl, kl_ranks, common_articles.values())
-
+                for (kl_div, kl_rank, (from_article, to_article)) in zip(
+                    kl, kl_ranks, common_articles.values()
+                )
             ),
             key=lambda x: x[0],
         )

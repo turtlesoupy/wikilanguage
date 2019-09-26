@@ -151,7 +151,8 @@ class WikiDataParser:
             ):
                 the_id = value["id"]
                 return {
-                    instance_name for instance_name, property_set in instance_map.items()
+                    instance_name
+                    for instance_name, property_set in instance_map.items()
                     if the_id in property_set
                 }
 
@@ -248,7 +249,9 @@ class WikiDataParser:
         return WikiDataInheritanceGraph(line_id_to_idx, line_id_to_label, g)
 
     @classmethod
-    def parse_dump(cls, input_stream, whitelisted_wikis=None, instance_map={}, limit=None):
+    def parse_dump(
+        cls, input_stream, whitelisted_wikis=None, instance_map={}, limit=None
+    ):
         wiki_title_to_id = {}
         id_to_entry = pygtrie.StringTrie()
         start = time.time()
@@ -305,9 +308,7 @@ class WikiDataParser:
             sample_coord = cls.parse_globe_coordinate(claims, sample_title, line_id)
             instances = cls.parse_instances(claims, instance_map, sample_title, line_id)
 
-            entry = WikiDataEntry(
-                line_id, sample_coord, instances=instances
-            )
+            entry = WikiDataEntry(line_id, sample_coord, instances=instances)
             id_to_entry[line_id] = entry
 
             if i % 10000 == 0:

@@ -14,7 +14,7 @@ UnparsedRawPage = namedtuple("UnparsedRawPage", ["id", "title", "redirect", "tex
 
 @dataclass
 class ParsedRawPage:
-    __slots__ = ['id', 'title', 'redirect', 'links']
+    __slots__ = ["id", "title", "redirect", "links"]
 
     id: str
     title: str
@@ -30,32 +30,34 @@ class ParsedRawPage:
     @classmethod
     def read_collection(cls, path):
         with open(path, "rb") as f:
-            unpacker = msgpack.Unpacker(f, raw=False, use_list=False, max_map_len=1024 ** 2)
+            unpacker = msgpack.Unpacker(
+                f, raw=False, use_list=False, max_map_len=1024 ** 2
+            )
             for item in unpacker:
                 yield cls.from_msgpack(item)
 
     @classmethod
     def from_msgpack(cls, item):
         id, title, redirect, links = item
-        return cls(
-            id, title, redirect, Counter(links)
-        )
+        return cls(id, title, redirect, Counter(links))
 
     def to_msgpack(self):
         return msgpack.packb(
-            (
-                self.id,
-                self.title,
-                self.redirect,
-                self.text,
-            ),
-            use_bin_type=True,
+            (self.id, self.title, self.redirect, self.text), use_bin_type=True
         )
 
 
 @dataclass
 class WikipediaCanonicalPage:
-    __slots__ = ['id', 'title', 'aliases', 'links', 'inlinks', 'pagerank', 'pagerank_percentile']
+    __slots__ = [
+        "id",
+        "title",
+        "aliases",
+        "links",
+        "inlinks",
+        "pagerank",
+        "pagerank_percentile",
+    ]
 
     id: str
     title: str
@@ -74,7 +76,9 @@ class WikipediaCanonicalPage:
     @classmethod
     def read_collection(cls, path, limit=None, skip_keys=()):
         with open(path, "rb") as f:
-            unpacker = msgpack.Unpacker(f, raw=False, use_list=False, max_map_len=1024 ** 2)
+            unpacker = msgpack.Unpacker(
+                f, raw=False, use_list=False, max_map_len=1024 ** 2
+            )
             for i, item in enumerate(unpacker):
                 yield WikipediaCanonicalPage.from_msgpack(item, skip_keys=skip_keys)
                 if limit and i >= limit:
@@ -89,7 +93,9 @@ class WikipediaCanonicalPage:
         elif len(item) == 7:
             (id, title, aliases, links, inlinks, pagerank, pagerank_percentile) = item
         else:
-            raise RuntimeError(f"Invalid WikipediaCanonicalPage read from msgpack: {item}")
+            raise RuntimeError(
+                f"Invalid WikipediaCanonicalPage read from msgpack: {item}"
+            )
 
         return cls(
             id,
@@ -112,7 +118,7 @@ class WikipediaCanonicalPage:
                 self.pagerank,
                 self.pagerank_percentile,
             ),
-            use_bin_type=True
+            use_bin_type=True,
         )
 
 
@@ -173,12 +179,16 @@ class WikiXMLHandler(xml.sax.ContentHandler):
                 if self.page_redirect:
                     raise RuntimeError(f"Already had a redirect for {self.page_title}")
                 if attrs.getLength() != 1:
-                    raise RuntimeError(f"More than one redirect attribute for {self.page_title}")
+                    raise RuntimeError(
+                        f"More than one redirect attribute for {self.page_title}"
+                    )
                 self.page_redirect = attrs.getValue("title")
 
             elif name == "revision":
                 if self.seen_page_revision:
-                    raise RuntimeError(f"Saw a second page revision for {self.page_title}")
+                    raise RuntimeError(
+                        f"Saw a second page revision for {self.page_title}"
+                    )
 
                 self.in_revision = True
             elif self.in_revision and name == "text":
@@ -228,13 +238,19 @@ class WikiXMLHandler(xml.sax.ContentHandler):
     def handle_page(self):
         self.page_count += 1
 
-        self.queue.put(UnparsedRawPage(self.page_id, self.page_title, self.page_redirect, self.page_text))
+        self.queue.put(
+            UnparsedRawPage(
+                self.page_id, self.page_title, self.page_redirect, self.page_text
+            )
+        )
 
         if self.limit and self.page_count >= self.limit:
             raise StopIteration("Stopping")
         elif self.page_count % 10000 == 0:
             delta = time.time() - self.start_time
-            print(f"Made it to {self.page_title} ({self.page_count}) in {delta}s ({self.page_count / delta})pps")
+            print(
+                f"Made it to {self.page_title} ({self.page_count}) in {delta}s ({self.page_count / delta})pps"
+            )
 
 
 class WikipediaDumpParser:
@@ -263,7 +279,9 @@ class WikipediaDumpParser:
         try:
             for i in range(concurrency):
                 p = multiprocessing.Process(
-                    target=unparsed2parsed_worker, args=(reader_queue, writer_queue), daemon=True
+                    target=unparsed2parsed_worker,
+                    args=(reader_queue, writer_queue),
+                    daemon=True,
                 )
                 p.start()
                 processes.append(p)
@@ -387,7 +405,9 @@ class WikipediaCanonicalPageResolver:
                     else:
                         bad_link_count += count
                         if bad_link_count % 100000 == 0:
-                            print(f"Sample bad link: '{p.title}' contains unresolved link '{link}'")
+                            print(
+                                f"Sample bad link: '{p.title}' contains unresolved link '{link}'"
+                            )
                     continue
                 else:
                     good_link_count += 1
