@@ -6,10 +6,13 @@ import pickle
 from itertools import zip_longest
 from collections import namedtuple
 import graph_tool
+import graph_tool.search
 
 
-GlobeCoordinate = namedtuple("GlobeCoordinate", ["latitude", "longitude", "altitude", "precision"])
-WikiDataEntry = namedtuple("WikiDataEntry", ["id", "sample_coord", "instance_of_city"])
+GlobeCoordinate = namedtuple(
+    "GlobeCoordinate", ["latitude", "longitude", "altitude", "precision"]
+)
+WikiDataEntry = namedtuple("WikiDataEntry", ["id", "sample_coord", "instances"])
 
 
 class WikiDataProperties:
@@ -42,7 +45,7 @@ class WikiData:
 
 
 class WikiDataInheritanceGraph:
-    def __init__(self,  line_id_to_idx, line_id_to_label, graph):
+    def __init__(self, line_id_to_idx, line_id_to_label, graph):
         self.line_id_to_idx = line_id_to_idx
         self.line_id_to_label = line_id_to_label
         self.graph = graph
@@ -81,6 +84,12 @@ class WikiDataInheritanceGraph:
     def vertex_for_id(self, the_id):
         return self.graph.vertex(self.idx_for_id(the_id))
 
+    def descendent_ids(self, vertex_id):
+        for edge in graph_tool.search.bfs_iterator(
+            self.graph, self.idx_for_id(vertex_id)
+        ):
+            yield self.id_for_vertex(edge.target())
+
     @classmethod
     def load(cls, path):
         with open(path, "rb") as f:
@@ -97,11 +106,12 @@ def grouper(n, iterable, padvalue=None):
 
 
 class WikiDataParser:
-
     @classmethod
     def extract_snak_value(cls, item, expected_value_type, title="", line_id=""):
         if "mainsnak" not in item:
-            raise RuntimeError(f"({line_id} {title}) Main snak not found in item {item}")
+            raise RuntimeError(
+                f"({line_id} {title}) Main snak not found in item {item}"
+            )
 
         mainsnak = item["mainsnak"]
         if "snaktype" not in mainsnak:
@@ -111,30 +121,39 @@ class WikiDataParser:
             return None
 
         if "datavalue" not in mainsnak:
-            raise RuntimeError(f"({line_id} {title}) Main snak of value type without data value")
+            raise RuntimeError(
+                f"({line_id} {title}) Main snak of value type without data value"
+            )
 
         datavalue = mainsnak["datavalue"]
         if "type" not in datavalue or datavalue["type"] != expected_value_type:
-            raise RuntimeError(f"({line_id} {title}) Expected type {expected_value_type} in {datavalue}")
+            raise RuntimeError(
+                f"({line_id} {title}) Expected type {expected_value_type} in {datavalue}"
+            )
 
         return datavalue["value"]
 
     @classmethod
-    def parse_instance_of_city(cls, claims, title="", line_id=""):
+    def parse_instances(cls, claims, instance_map, title="", line_id=""):
         if WikiDataProperties.INSTANCE_OF not in claims:
             return False
 
         instances = claims[WikiDataProperties.INSTANCE_OF]
         for instance in instances:
-            value = cls.extract_snak_value(instance, "wikibase-entityid", title=title, line_id=line_id)
+            value = cls.extract_snak_value(
+                instance, "wikibase-entityid", title=title, line_id=line_id
+            )
             if (
                 value is not None
                 and "entity-type" in value
                 and value["entity-type"] == "item"
                 and "id" in value
-                and value["id"] == "Q515"
             ):
-                return True
+                the_id = value["id"]
+                return {
+                    instance_name for instance_name, property_set in instance_map.items()
+                    if the_id in property_set
+                }
 
         return False
 
@@ -144,87 +163,92 @@ class WikiDataParser:
             return None
 
         coordinates = claims[WikiDataProperties.COORDINATE_LOCATION]
-        value = cls.extract_snak_value(coordinates[0], "globecoordinate", title=title, line_id=line_id)
+        value = cls.extract_snak_value(
+            coordinates[0], "globecoordinate", title=title, line_id=line_id
+        )
         if value is None:
             return None
 
-        return GlobeCoordinate(*(value[e] for e in ("latitude", "longitude", "altitude", "precision")))
+        return GlobeCoordinate(
+            *(value[e] for e in ("latitude", "longitude", "altitude", "precision"))
+        )
 
     @classmethod
     def inheritance_graph(cls, input_stream, limit=None):
-        current_property_idx = 0
+
+        g = graph_tool.Graph()
         line_id_to_idx = bidict()
         line_id_to_label = {}
 
-        g = graph_tool.Graph()
-        num_edges = 0
-        start = time.time()
+        def edge_yielder():
+            current_property_idx = 0
+            num_edges = 0
+            start = time.time()
 
-        def process_line(line):
-            nonlocal current_property_idx, line_id_to_idx, line_id_to_label, num_edges
-            loaded = json.loads(line.rstrip(",\n"))
+            for i, line in enumerate(input_stream):
+                if limit and i >= limit:
+                    break
 
-            line_type = loaded["type"]
-            line_id = loaded["id"]
+                if i % 10000 == 0:
+                    delta = time.time() - start
+                    print(
+                        f"Reached line {i} with {len(line_id_to_idx)} properties and {num_edges} edges"
+                        f" @ {delta}s ({i / delta} LPS)"
+                    )
 
-            if line_type == "property":
-                return
+                if not line.startswith("{"):
+                    continue
 
-            if line_type != "item":
-                raise RuntimeError("Found non-item line")
+                loaded = json.loads(line.rstrip(",\n"))
 
-            if line_id not in line_id_to_idx:
-                line_id_to_idx[line_id] = current_property_idx
-                current_property_idx += 1
+                line_type = loaded["type"]
+                line_id = loaded["id"]
 
-            label = "<UNKNOWN>"
-            if "labels" in loaded and "en" in loaded["labels"]:
-                label = loaded["labels"]["en"]["value"]
+                if line_type == "property":
+                    continue
 
-            line_id_to_label[line_id] = label
+                if line_type != "item":
+                    raise RuntimeError("Found non-item line")
 
-            claims = loaded["claims"]
+                if line_id not in line_id_to_idx:
+                    line_id_to_idx[line_id] = current_property_idx
+                    current_property_idx += 1
 
-            if WikiDataProperties.SUBCLASS_OF not in claims:
-                return
+                label = "<UNKNOWN>"
+                if "labels" in loaded and "en" in loaded["labels"]:
+                    label = loaded["labels"]["en"]["value"]
 
-            superclasses = claims[WikiDataProperties.SUBCLASS_OF]
-            for superclass in superclasses:
-                value = cls.extract_snak_value(superclass, "wikibase-entityid", line_id=line_id)
-                if (
-                    value is not None
-                    and "entity-type" in value
-                    and value["entity-type"] == "item"
-                    and "id" in value
-                ):
-                    superclass_id = value["id"]
-                    if superclass_id not in line_id_to_idx:
-                        line_id_to_idx[superclass_id] = current_property_idx
-                        current_property_idx += 1
+                line_id_to_label[line_id] = label
 
-                    g.add_edge(line_id_to_idx[superclass_id], line_id_to_idx[line_id])
-                    num_edges += 1
+                claims = loaded["claims"]
 
-        for i, line in enumerate(input_stream):
-            if limit and i >= limit:
-                break
+                if WikiDataProperties.SUBCLASS_OF not in claims:
+                    continue
 
-            if i % 10000 == 0:
-                delta = time.time() - start
-                print(
-                    f"Reached line {i} with {len(line_id_to_idx)} properties and {num_edges} edges"
-                    f" @ {delta}s ({i / delta} LPS)"
-                )
+                superclasses = claims[WikiDataProperties.SUBCLASS_OF]
+                for superclass in superclasses:
+                    value = cls.extract_snak_value(
+                        superclass, "wikibase-entityid", line_id=line_id
+                    )
+                    if (
+                        value is not None
+                        and "entity-type" in value
+                        and value["entity-type"] == "item"
+                        and "id" in value
+                    ):
+                        superclass_id = value["id"]
+                        if superclass_id not in line_id_to_idx:
+                            line_id_to_idx[superclass_id] = current_property_idx
+                            current_property_idx += 1
 
-            if not line.startswith("{"):
-                continue
+                        yield (line_id_to_idx[superclass_id], line_id_to_idx[line_id])
+                        num_edges += 1
 
-            process_line(line)
-
+        g.add_edge_list(edge_yielder())
         return WikiDataInheritanceGraph(line_id_to_idx, line_id_to_label, g)
 
     @classmethod
-    def parse_dump(cls, input_stream, whitelisted_wikis=None, limit=None):
+    def parse_dump(cls, input_stream, whitelisted_wikis=None, instance_map={}, limit=None):
         wiki_title_to_id = {}
         id_to_entry = pygtrie.StringTrie()
         start = time.time()
@@ -279,12 +303,10 @@ class WikiDataParser:
 
             claims = loaded["claims"]
             sample_coord = cls.parse_globe_coordinate(claims, sample_title, line_id)
-            instance_of_city = cls.parse_instance_of_city(claims)
+            instances = cls.parse_instances(claims, instance_map, sample_title, line_id)
 
             entry = WikiDataEntry(
-                line_id,
-                sample_coord,
-                instance_of_city=instance_of_city
+                line_id, sample_coord, instances=instances
             )
             id_to_entry[line_id] = entry
 
