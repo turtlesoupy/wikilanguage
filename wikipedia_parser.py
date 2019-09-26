@@ -255,7 +255,7 @@ class WikiXMLHandler(xml.sax.ContentHandler):
 
 class WikipediaDumpParser:
     @classmethod
-    def parsed_wikipedia_pages(cls, filename, limit=None, concurrency=None):
+    def parsed_wikipedia_pages(cls, stream, limit=None, concurrency=None):
         concurrency = concurrency or multiprocessing.cpu_count() * 2
 
         def unparsed2parsed_worker(reader_queue, writer_queue):
@@ -288,7 +288,7 @@ class WikipediaDumpParser:
 
             handler = WikiXMLHandler(reader_queue, limit=limit)
             try:
-                xml.sax.parse(filename, handler)
+                xml.sax.parse(stream, handler)
             except StopIteration:
                 pass
 

@@ -1,4 +1,5 @@
 import io
+import bz2
 import gzip
 import tempfile
 from pagerank import pagerank_with_percentiles
@@ -10,26 +11,29 @@ from wikipedia_parser import (
 )
 
 
-def store_wikidata_dump(input_path, write_path, whitelisted_wikis=None):
-    WikiDataParser.dump(
-        WikiDataParser.parse_dump(input_path, whitelisted_wikis=whitelisted_wikis),
-        write_path,
-    )
-
-
-def store_wikidata_inheritance_graph(input_path, write_path, limit=None):
-    with open(input_path, mode="rb", buffering=100 * 1024 * 1024) as f:
-        f = gzip.GzipFile(fileobj=f)
-        f = io.BufferedReader(f, buffer_size=100 * 1024 * 1024)
-        stream = io.TextIOWrapper(f)
-        inheritance_graph = WikiDataParser.inheritance_graph(stream)
-
-    inheritance_graph.dump(write_path)
+def _buffered_stream(input_path):
+    bufsize = 100 * 1024 * 1024
+    if input_path.endswith(".bz2"):
+        with open(input_path, mode="rb", buffering=bufsize) as f:
+            f = bz2.BZ2File(f)
+            f = io.BufferedReader(f, buffer_size=bufsize)
+            stream = io.TextIOWrapper(f)
+            yield stream
+    elif input_path.endswith(".gz"):
+        with open(input_path, mode="rb", buffering=bufsize) as f:
+            f = gzip.GzipFile(fileobj=f)
+            f = io.BufferedReader(f, buffer_size=bufsize)
+            stream = io.TextIOWrapper(f)
+            yield stream
+    else:
+        with open(input_path, mode="r", buffering=bufsize) as f:
+            yield f
 
 
 def store_wikipedia_pages(input_path, write_path, limit=None):
     print("Parsing raw pages")
-    raw_pages = WikipediaDumpParser.parsed_wikipedia_pages(input_path, limit=limit)
+    with _buffered_stream(input_path) as f:
+        raw_pages = WikipediaDumpParser.parsed_wikipedia_pages(f, limit=limit)
     print("Parsed! Resolving links")
     wiki_pages = list(WikipediaCanonicalPageResolver.resolve_parsed_pages(raw_pages))
     wiki_pages.sort(key=lambda x: x.title)
@@ -65,13 +69,11 @@ def store_wiki_with_pagerank(input_path, write_path, limit=None, in_memory=True)
         augment_with_pagerank(f.name, write_path, in_memory=in_memory)
 
 
-def store_wikidata_with_default_properties(
-    input_path, write_path, inheritance_graph, whitelisted_wikis=None, limit=None
-):
+def default_instance_map(inheritance_graph):
     def d(the_id):
         return {e for e in inheritance_graph.descendent_ids(the_id)}
 
-    instance_map = {
+    return {
         "city": d("Q2095"),
         "food": d("Q515"),
         "human": d("Q5"),
@@ -94,19 +96,20 @@ def store_wikidata_with_default_properties(
         "human-geographic": d("Q15642541"),
         "political-territorial-entity": d("Q1048835"),
     }
-    return store_wikidata(
-        input_path, write_path, instance_map, whitelisted_wikis, limit
-    )
 
 
 def store_wikidata(
     input_path, write_path, instance_map={}, whitelisted_wikis=None, limit=None
 ):
-    with open(input_path, mode="rb", buffering=100 * 1024 * 1024) as f:
-        f = gzip.GzipFile(fileobj=f)
-        f = io.BufferedReader(f, buffer_size=100 * 1024 * 1024)
-        stream = io.TextIOWrapper(f)
+    with _buffered_stream(input_path) as f:
         wikidata = WikiDataParser.parse_dump(
-            stream, whitelisted_wikis=whitelisted_wikis, instance_map=instance_map
+            f, whitelisted_wikis=whitelisted_wikis, instance_map=instance_map
         )
     wikidata.dump(write_path)
+
+
+def store_wikidata_inheritance_graph(input_path, write_path, limit=None):
+    with _buffered_stream(input_path) as f:
+        inheritance_graph = WikiDataParser.inheritance_graph(f)
+
+    inheritance_graph.dump(write_path)
