@@ -1,8 +1,9 @@
 import sqlite3
 from contextlib import contextmanager
 
+
 class WikilanguageDB:
-    @classmethod 
+    @classmethod
     @contextmanager
     def con(cls, path="wikilanguage.sqlite"):
         con = sqlite3.connect(path)
@@ -10,16 +11,16 @@ class WikilanguageDB:
             yield cls(con)
         finally:
             con.close()
-    
+
     def __init__(self, con):
         self.con = con
-        
+
     def create_tables(self):
         with self.con as cur:
             #
             # Wikidata entries
             #
-            
+
             cur.execute(
                 """
                 CREATE TABLE concepts (
@@ -31,11 +32,11 @@ class WikilanguageDB:
                     coord_precision REAL
                 )"""
             )
-            
+
             #
             # Concept -> wikis containing articles of this concept
             #
-            
+
             cur.execute(
                 """
                 CREATE TABLE concept_articles (
@@ -54,7 +55,7 @@ class WikilanguageDB:
                 CREATE UNIQUE INDEX idx_concept_articles_wiki_title ON concept_articles(wiki, article_title, concept_id)
                 """
             )
-            
+
             #
             # Flattened view of all concepts a concept is an instance of
             # (e.g. american city is an instance of city)
@@ -77,12 +78,11 @@ class WikilanguageDB:
                 CREATE INDEX idx_concept_instance_of_id ON concept_instance_of(instance_of_concept_id)
                 """
             )
-            
-            
+
             #
             # Wikipedia articles (language specific)
             #
-            
+
             cur.execute(
                 """
                 CREATE TABLE articles (
@@ -94,10 +94,9 @@ class WikilanguageDB:
                 )
                 """
             )
-            
+
             cur.execute(
                 """
                 CREATE UNIQUE INDEX idx_articles_concept_id_wiki ON articles(wiki, title)
                 """
             )
-        

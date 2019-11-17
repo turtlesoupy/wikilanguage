@@ -14,14 +14,8 @@ GlobeCoordinate = namedtuple(
     "GlobeCoordinate", ["latitude", "longitude", "altitude", "precision"]
 )
 WikiDataEntry = namedtuple(
-    "WikiDataEntry", 
-    [
-        "id", 
-        "sample_title",
-        "sample_coord", 
-        "titles_by_wiki",
-        "direct_instance_of",
-    ]
+    "WikiDataEntry",
+    ["id", "sample_title", "sample_coord", "titles_by_wiki", "direct_instance_of",],
 )
 
 
@@ -31,50 +25,22 @@ class WikiDataProperties:
     COORDINATE_LOCATION = "P625"
 
 
-class WikiData:
-    def __init__(self, wiki_title_to_id, id_to_entry):
-        self.wiki_title_to_id = wiki_title_to_id
-        self.id_to_entry = id_to_entry
-
-    def wikidata_id(self, wikiname, title):
-        return self.wiki_title_to_id[wikiname][title]
-
-    def restrict_to_wikis(self, valid_wikis):
-        for wiki in list(self.wiki_title_to_id.keys()):
-            if wiki not in valid_wikis:
-                del self.wiki_title_to_id[wiki]
-                
-    @classmethod
-    def from_entries(cls, iter : Iterator[WikiDataEntry]):
-        wiki_title_to_id = {}
-        id_to_entry = pygtrie.StringTrie()
-        
-
-    @classmethod
-    def load(cls, path):
-        with open(path, "rb") as f:
-            return pickle.load(f)
-
-    def dump(self, path):
-        with open(path, "wb") as f:
-            pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-
 class WikiDataInheritanceGraph:
     def __init__(self, line_id_to_idx, line_id_to_label, graph):
         self.line_id_to_idx = line_id_to_idx
         self.line_id_to_label = line_id_to_label
         self.graph = graph
-        
+
     def parent_finder(self):
         # Graph tool is a bit slow for DFS on this large graph, not sure why
-        
+
         class ParentFinder:
             def __init__(self, parents):
                 self.parents = parents
-                
+
             def all_parents(self, the_id, add_to_set=None):
                 the_set = set() if add_to_set is None else add_to_set
+
                 def _inner(the_id):
                     if the_id in the_set:
                         return
@@ -82,17 +48,17 @@ class WikiDataInheritanceGraph:
                     the_set.add(the_id)
                     for p in self.parents[the_id]:
                         _inner(p)
-                        
+
                 _inner(the_id)
                 return the_set
-            
+
         parents = defaultdict(set)
         for e in self.graph.edges():
             f, t = self.id_for_edge(e)
             parents[t].add(f)
-                           
+
         return ParentFinder(parents)
-    
+
     def has_id(self, the_id):
         return the_id in self.line_id_to_idx
 
@@ -137,9 +103,9 @@ class WikiDataInheritanceGraph:
         ):
             if edge.target() in seen_set:
                 continue
-                
+
             seen_set.add(edge.target())
-            yield self.id_for_vertex(edge.target()) 
+            yield self.id_for_vertex(edge.target())
 
     @classmethod
     def load(cls, path):
@@ -335,25 +301,25 @@ class WikiDataParser:
                     continue
 
                 title = v["title"]
-                
+
                 if wiki == "enwiki":
                     english_title = title
-                    
+
                 titles_by_wiki[wiki] = title
- 
+
             if not titles_by_wiki:
                 continue
-            
+
             sample_title = english_title or next(iter(titles_by_wiki.values()))
-            
+
             claims = loaded["claims"]
             sample_coord = cls.parse_globe_coordinate(claims, sample_title, line_id)
             instances = cls.parse_instances(claims, sample_title, line_id)
 
             yield WikiDataEntry(
-                line_id, 
+                line_id,
                 sample_title,
-                sample_coord, 
+                sample_coord,
                 titles_by_wiki=titles_by_wiki,
                 direct_instance_of=instances,
             )

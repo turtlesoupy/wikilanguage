@@ -13,9 +13,11 @@ from wikipedia_parser import (
 )
 from contextlib import contextmanager
 
+
 def grouper(n, iterable):
     args = [iter(iterable)] * n
     return ([e for e in t if e != None] for t in itertools.zip_longest(*args))
+
 
 @contextmanager
 def _buffered_stream(input_path):
@@ -65,20 +67,27 @@ def augment_with_pagerank(canonical_file, in_memory=True):
         page.pagerank_percentile = pr_percentile
         yield page
 
+
 def store_wiki_with_pagerank(input_path, write_path, limit=None, in_memory=True):
     with tempfile.NamedTemporaryFile() as f:
         store_wikipedia_pages(input_path, f.name, limit=limit)
         WikipediaCanonicalPage.dump_collection(
-            augment_with_pagerank(f.name, in_memory=in_memory),
-            write_path,
+            augment_with_pagerank(f.name, in_memory=in_memory), write_path,
         )
     print("All done!")
-    
-def write_articles_into_db(db, input_path, wiki_name, rank_in_memory=True, db_batch_size=10000, limit=None):
+
+
+def write_articles_into_db(
+    db, input_path, wiki_name, rank_in_memory=True, db_batch_size=10000, limit=None
+):
     start = time.time()
     with tempfile.NamedTemporaryFile() as f:
         store_wikipedia_pages(input_path, f.name, limit=limit)
-        for i, pages in enumerate(grouper(db_batch_size, augment_with_pagerank(f.name, in_memory=rank_in_memory))):
+        for i, pages in enumerate(
+            grouper(
+                db_batch_size, augment_with_pagerank(f.name, in_memory=rank_in_memory)
+            )
+        ):
             with db.con as cur:
                 cur.executemany(
                     """
@@ -86,24 +95,108 @@ def write_articles_into_db(db, input_path, wiki_name, rank_in_memory=True, db_ba
                     VALUES(?, ?, ?, ?, ?)
                     """,
                     (
-                        (
-                            wiki_name,
-                            p.title, 
-                            p.id,
-                            p.pagerank,
-                            p.pagerank_percentile,
-                        )
+                        (wiki_name, p.title, p.id, p.pagerank, p.pagerank_percentile,)
                         for p in pages
-                    )
+                    ),
                 )
                 page_num = (i + 1) * db_batch_size
                 if page_num % 100000 == 0:
                     delta = time.time() - start
                     pps = page_num / delta
-                    print(f"DB Write: made it to page {page_num} in {delta:.2f}s {pps:.2f}pps") 
+                    print(
+                        f"DB Write: made it to page {page_num} in {delta:.2f}s {pps:.2f}pps"
+                    )
         print("Finished writing!")
-             
-            
+
+
+def write_wikidata_into_db(
+    db,
+    input_path,
+    parent_finder,
+    whitelisted_wikis=None,
+    limit=None,
+    db_batch_size=10000,
+):
+    start = time.time()
+    with _buffered_stream(input_path) as f:
+        for i, entries in enumerate(
+            grouper(
+                db_batch_size,
+                WikiDataParser.parse_dump(f, whitelisted_wikis=whitelisted_wikis),
+            )
+        ):
+            page_num = i * db_batch_size
+            if limit and page_num > limit:
+                break
+
+            with db.con as cur:
+                # Insert concept record
+                cur.executemany(
+                    """
+                    INSERT INTO concepts(
+                        concept_id, sample_title, coord_latitude, coord_longitude, coord_altitude, coord_precision
+                    ) 
+                    VALUES(?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        (
+                            e.id,
+                            e.sample_title,
+                            e.sample_coord and e.sample_coord.latitude,
+                            e.sample_coord and e.sample_coord.longitude,
+                            e.sample_coord and e.sample_coord.altitude,
+                            e.sample_coord and e.sample_coord.precision,
+                        )
+                        for e in entries
+                    ),
+                )
+
+                # Insert article records
+                cur.executemany(
+                    """
+                    INSERT INTO concept_articles(
+                        concept_id, wiki, article_title
+                    ) 
+                    VALUES(?, ?, ?)
+                    """,
+                    itertools.chain.from_iterable(
+                        (
+                            (e.id, wiki, title,)
+                            for wiki, title in e.titles_by_wiki.items()
+                        )
+                        for e in entries
+                    ),
+                )
+
+                # Insert instance of records
+                instances = []
+                for e in entries:
+                    parent_concepts = set()
+                    for c in e.direct_instance_of:
+                        parent_finder.all_parents(c, parent_concepts)
+
+                    for parent_concept in parent_concepts:
+                        instances.append((e.id, parent_concept))
+
+                cur.executemany(
+                    """
+                    INSERT INTO concept_instance_of (
+                        concept_id,
+                        instance_of_concept_id
+                    )
+                    VALUES (?, ?)
+                    """,
+                    instances,
+                )
+
+                if page_num % 100000 == 0:
+                    delta = time.time() - start
+                    pps = page_num / delta
+                    print(
+                        f"DB Write: made it to page {page_num} in {delta:.2f}s {pps:.2f}pps"
+                    )
+
+
 def default_instance_map(inheritance_graph):
     def d(the_id):
         return {e for e in inheritance_graph.descendent_ids(the_id)}
