@@ -2,6 +2,8 @@ import io
 import bz2
 import gzip
 import tempfile
+import time
+import itertools
 from pagerank import pagerank_with_percentiles
 from wikidata_parser import WikiDataParser
 from wikipedia_parser import (
@@ -9,8 +11,13 @@ from wikipedia_parser import (
     WikipediaCanonicalPageResolver,
     WikipediaCanonicalPage,
 )
+from contextlib import contextmanager
 
+def grouper(n, iterable):
+    args = [iter(iterable)] * n
+    return ([e for e in t if e != None] for t in itertools.zip_longest(*args))
 
+@contextmanager
 def _buffered_stream(input_path):
     bufsize = 100 * 1024 * 1024
     if input_path.endswith(".bz2"):
@@ -41,7 +48,7 @@ def store_wikipedia_pages(input_path, write_path, limit=None):
     WikipediaCanonicalPage.dump_collection(wiki_pages, write_path)
 
 
-def augment_with_pagerank(canonical_file, write_path, in_memory=True):
+def augment_with_pagerank(canonical_file, in_memory=True):
     if in_memory:
         c = list(WikipediaCanonicalPage.read_collection(canonical_file))
 
@@ -53,22 +60,50 @@ def augment_with_pagerank(canonical_file, write_path, in_memory=True):
         def loader():
             return WikipediaCanonicalPage.read_collection(canonical_file)
 
-    def yielder():
-        for page, pr, pr_percentile in pagerank_with_percentiles(loader):
-            page.pagerank = pr
-            page.pagerank_percentile = pr_percentile
-            yield page
-
-    WikipediaCanonicalPage.dump_collection(yielder(), write_path)
-    print("All done!")
-
+    for page, pr, pr_percentile in pagerank_with_percentiles(loader):
+        page.pagerank = pr
+        page.pagerank_percentile = pr_percentile
+        yield page
 
 def store_wiki_with_pagerank(input_path, write_path, limit=None, in_memory=True):
     with tempfile.NamedTemporaryFile() as f:
         store_wikipedia_pages(input_path, f.name, limit=limit)
-        augment_with_pagerank(f.name, write_path, in_memory=in_memory)
-
-
+        WikipediaCanonicalPage.dump_collection(
+            augment_with_pagerank(f.name, in_memory=in_memory),
+            write_path,
+        )
+    print("All done!")
+    
+def write_articles_into_db(db, input_path, wiki_name, rank_in_memory=True, db_batch_size=10000, limit=None):
+    start = time.time()
+    with tempfile.NamedTemporaryFile() as f:
+        store_wikipedia_pages(input_path, f.name, limit=limit)
+        for i, pages in enumerate(grouper(db_batch_size, augment_with_pagerank(f.name, in_memory=rank_in_memory))):
+            with db.con as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO articles(wiki, title, id, pagerank, pagerank_percentile) 
+                    VALUES(?, ?, ?, ?, ?)
+                    """,
+                    (
+                        (
+                            wiki_name,
+                            p.title, 
+                            p.id,
+                            p.pagerank,
+                            p.pagerank_percentile,
+                        )
+                        for p in pages
+                    )
+                )
+                page_num = (i + 1) * db_batch_size
+                if page_num % 100000 == 0:
+                    delta = time.time() - start
+                    pps = page_num / delta
+                    print(f"DB Write: made it to page {page_num} in {delta:.2f}s {pps:.2f}pps") 
+        print("Finished writing!")
+             
+            
 def default_instance_map(inheritance_graph):
     def d(the_id):
         return {e for e in inheritance_graph.descendent_ids(the_id)}

@@ -4,15 +4,25 @@ import ujson as json
 import time
 import pickle
 from itertools import zip_longest
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 import graph_tool
 import graph_tool.search
-
+from graph_tool import GraphView
+from typing import Iterator
 
 GlobeCoordinate = namedtuple(
     "GlobeCoordinate", ["latitude", "longitude", "altitude", "precision"]
 )
-WikiDataEntry = namedtuple("WikiDataEntry", ["id", "sample_coord", "instances"])
+WikiDataEntry = namedtuple(
+    "WikiDataEntry", 
+    [
+        "id", 
+        "sample_title",
+        "sample_coord", 
+        "titles_by_wiki",
+        "direct_instance_of",
+    ]
+)
 
 
 class WikiDataProperties:
@@ -33,6 +43,12 @@ class WikiData:
         for wiki in list(self.wiki_title_to_id.keys()):
             if wiki not in valid_wikis:
                 del self.wiki_title_to_id[wiki]
+                
+    @classmethod
+    def from_entries(cls, iter : Iterator[WikiDataEntry]):
+        wiki_title_to_id = {}
+        id_to_entry = pygtrie.StringTrie()
+        
 
     @classmethod
     def load(cls, path):
@@ -49,6 +65,36 @@ class WikiDataInheritanceGraph:
         self.line_id_to_idx = line_id_to_idx
         self.line_id_to_label = line_id_to_label
         self.graph = graph
+        
+    def parent_finder(self):
+        # Graph tool is a bit slow for DFS on this large graph, not sure why
+        
+        class ParentFinder:
+            def __init__(self, parents):
+                self.parents = parents
+                
+            def all_parents(self, the_id, add_to_set=None):
+                the_set = set() if add_to_set is None else add_to_set
+                def _inner(the_id):
+                    if the_id in the_set:
+                        return
+
+                    the_set.add(the_id)
+                    for p in self.parents[the_id]:
+                        _inner(p)
+                        
+                _inner(the_id)
+                return the_set
+            
+        parents = defaultdict(set)
+        for e in self.graph.edges():
+            f, t = self.id_for_edge(e)
+            parents[t].add(f)
+                           
+        return ParentFinder(parents)
+    
+    def has_id(self, the_id):
+        return the_id in self.line_id_to_idx
 
     def idx_for_vertex(self, vertex):
         return self.graph.vertex_index[vertex]
@@ -85,10 +131,15 @@ class WikiDataInheritanceGraph:
         return self.graph.vertex(self.idx_for_id(the_id))
 
     def descendent_ids(self, vertex_id):
-        for edge in graph_tool.search.bfs_iterator(
+        seen_set = set()
+        for edge in graph_tool.search.dfs_iterator(
             self.graph, self.idx_for_id(vertex_id)
         ):
-            yield self.id_for_vertex(edge.target())
+            if edge.target() in seen_set:
+                continue
+                
+            seen_set.add(edge.target())
+            yield self.id_for_vertex(edge.target()) 
 
     @classmethod
     def load(cls, path):
@@ -136,8 +187,9 @@ class WikiDataParser:
     @classmethod
     def parse_instances(cls, claims, instance_map, title="", line_id=""):
         if WikiDataProperties.INSTANCE_OF not in claims:
-            return False
+            return set()
 
+        ret = set()
         instances = claims[WikiDataProperties.INSTANCE_OF]
         for instance in instances:
             value = cls.extract_snak_value(
@@ -149,14 +201,9 @@ class WikiDataParser:
                 and value["entity-type"] == "item"
                 and "id" in value
             ):
-                the_id = value["id"]
-                return {
-                    instance_name
-                    for instance_name, property_set in instance_map.items()
-                    if the_id in property_set
-                }
+                ret.add(value["id"])
 
-        return False
+        return ret
 
     @classmethod
     def parse_globe_coordinate(cls, claims, title="", line_id=""):
@@ -176,7 +223,6 @@ class WikiDataParser:
 
     @classmethod
     def inheritance_graph(cls, input_stream, limit=None):
-
         g = graph_tool.Graph()
         line_id_to_idx = bidict()
         line_id_to_label = {}
@@ -250,10 +296,8 @@ class WikiDataParser:
 
     @classmethod
     def parse_dump(
-        cls, input_stream, whitelisted_wikis=None, instance_map={}, limit=None
+        cls, input_stream, whitelisted_wikis=None, limit=None,
     ):
-        wiki_title_to_id = {}
-        id_to_entry = pygtrie.StringTrie()
         start = time.time()
         all_json_time = 0
 
@@ -284,32 +328,35 @@ class WikiDataParser:
 
             english_title = None
             sample_title = None
+            titles_by_wiki = {}
 
             for wiki, v in loaded["sitelinks"].items():
                 if whitelisted_wikis is not None and wiki not in whitelisted_wikis:
                     continue
 
                 title = v["title"]
-                if wiki not in wiki_title_to_id:
-                    wiki_title_to_id[wiki] = pygtrie.StringTrie()
-
+                
                 if wiki == "enwiki":
                     english_title = title
-
-                sample_title = title
-
-                wiki_title_to_id[wiki][title] = line_id
-
-            sample_title = english_title or sample_title
-            if sample_title is None:
+                    
+                titles_by_wiki[wiki] = title
+ 
+            if not titles_by_wiki:
                 continue
-
+            
+            sample_title = english_title or next(iter(titles_by_wiki.values()))
+            
             claims = loaded["claims"]
             sample_coord = cls.parse_globe_coordinate(claims, sample_title, line_id)
-            instances = cls.parse_instances(claims, instance_map, sample_title, line_id)
+            instances = cls.parse_instances(claims, sample_title, line_id)
 
-            entry = WikiDataEntry(line_id, sample_coord, instances=instances)
-            id_to_entry[line_id] = entry
+            yield WikiDataEntry(
+                line_id, 
+                sample_title,
+                sample_coord, 
+                titles_by_wiki=titles_by_wiki,
+                direct_instance_of=instances,
+            )
 
             if i % 10000 == 0:
                 end = time.time()
@@ -320,5 +367,3 @@ class WikiDataParser:
 
             if limit and i >= limit:
                 break
-
-        return WikiData(wiki_title_to_id, id_to_entry)
