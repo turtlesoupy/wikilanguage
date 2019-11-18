@@ -15,6 +15,59 @@ class WikilanguageDB:
     def __init__(self, con):
         self.con = con
 
+    def highest_ranked(self, wiki, instance_of):
+        f"""
+        SELECT 
+          ca.title,
+          ca.pagerank,
+          ef.title AS english_title
+        FROM concept_instance_of instance
+        INNER JOIN concept_articles cf ON (
+            cf.concept_id=instance.concept_id
+            AND cf.wiki='{wiki}'
+        )
+        INNER JOIN articles ca ON (
+           ca.wiki='{wiki}'
+           AND ca.article_title=cf.article_title
+        ) 
+        LEFT OUTER JOIN concept_articles ef ON (
+            ef.concept_id=cf.concept_id
+            AND ef.wiki='enwiki'
+        )
+        
+        WHERE instance.instance_of_concept_id='{instance_of}'
+        ORDER BY ca.pagerank DESC
+        """
+
+    def highest_ranked_kl(self, from_wiki, to_wiki, instance_of):
+        f"""
+        SELECT 
+          fa.pagerank AS from_pagerank,
+          ta.pagerank AS to_pagerank,
+          
+          ta.pagerank * (LOG(to_pagerank) - LOG(from_pagerank)) AS kl_divergence,
+          
+        FROM concept_instance_of instance
+        INNER JOIN concept_articles cf ON (
+            cf.concept_id=instance.concept_id
+            AND cf.wiki='{from_wiki}'
+        )
+        INNER JOIN concept_articles ct ON (
+            ct.concept_id=instance.concept_id
+            AND ct.wiki='{to_wiki}''
+        )
+        INNER JOIN articles fa ON (
+            fa.wiki='{from_wiki}'
+            AND fa.article_title=cf.article_title
+        )
+        INNER JOIN articles ta ON (
+            ta.wiki='{to_wiki}'
+            AND ta.title=ct.article_title
+        )
+        WHERE instance.instance_of_concept_id='{instance_of}'
+        ORDER BY kl_divergence DESC
+        """
+
     def create_tables(self):
         with self.con as cur:
             #

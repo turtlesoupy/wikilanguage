@@ -258,7 +258,7 @@ class WikipediaDumpParser:
     def parsed_wikipedia_pages(cls, stream, limit=None, concurrency=None):
         concurrency = concurrency or multiprocessing.cpu_count() * 2
 
-        def unparsed2parsed_worker(reader_queue, writer_queue):
+        def unparsed2parsed_worker(reader_queue, page_list):
             while True:
                 unparsed_page = reader_queue.get()
                 if unparsed_page is None:
@@ -271,16 +271,16 @@ class WikipediaDumpParser:
                     redirect=unparsed_page.redirect,
                     links=Counter(e.title.strip() for e in parsed.wikilinks),
                 )
-                writer_queue.put(page)
+                page_list.append(page)
 
-        reader_queue = multiprocessing.Queue(concurrency * 10)
-        writer_queue = multiprocessing.Queue()
         processes = []
-        try:
+        with multiprocessing.Manager() as manager:
+            reader_queue = manager.Queue(concurrency * 10)
+            page_list = manager.list()
             for i in range(concurrency):
                 p = multiprocessing.Process(
                     target=unparsed2parsed_worker,
-                    args=(reader_queue, writer_queue),
+                    args=(reader_queue, page_list),
                     daemon=True,
                 )
                 p.start()
@@ -295,22 +295,11 @@ class WikipediaDumpParser:
             for p in processes:
                 reader_queue.put(None)
 
-            pages = []
-            while True:
-                try:
-                    pages.append(writer_queue.get(False))
-                except queue.Empty:
-                    if any(p.is_alive() for p in processes):
-                        continue
-                    else:
-                        break
+            while any(p.is_alive() for p in processes):
+                print("Wikipedia parser: Waiting for sub-processes to finish")
+                time.sleep(1)
 
-            return pages
-        except Exception:
-            print("Exception raised, terminating subprocesses")
-            for p in processes:
-                p.terminate()
-            raise
+            return list(page_list)
 
 
 class WikipediaCanonicalPageResolver:
