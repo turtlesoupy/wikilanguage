@@ -10,8 +10,8 @@ from wikidata_parser import WikiDataParser, WikiDataInheritanceGraph
 
 
 def main():
-    wikidata_path = "wikis/wikidata-latest-all.json.gz"
-    wiki_paths = glob.glob("wikis/*-pages-articles*")
+    wikidata_path = "wikis-2019-11-17/wikidata-latest-all.json.gz"
+    wiki_paths = glob.glob("wikis-2019-11-17/*-pages-articles*")
     inheritance_path = "data/wikidata_inheritance.pickle"
     db_path = "data/wikilanguage.db"
     limit = None

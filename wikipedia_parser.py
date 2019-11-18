@@ -8,6 +8,7 @@ import io
 import queue
 from collections import namedtuple, Counter
 from typing import Set, Optional
+import signal
 
 UnparsedRawPage = namedtuple("UnparsedRawPage", ["id", "title", "redirect", "text"])
 
@@ -253,34 +254,61 @@ class WikiXMLHandler(xml.sax.ContentHandler):
             )
 
 
+class TimeoutError(Exception):
+    pass
+
+
+class timeout:
+    def __init__(self, seconds=1):
+        self.seconds = seconds
+
+    def handle_timeout(self, signum, frame):
+        raise TimeoutError("timed out")
+
+    def __enter__(self):
+        signal.signal(signal.SIGALRM, self.handle_timeout)
+        signal.alarm(self.seconds)
+
+    def __exit__(self, type, value, traceback):
+        signal.alarm(0)
+
+
 class WikipediaDumpParser:
     @classmethod
     def parsed_wikipedia_pages(cls, stream, limit=None, concurrency=None):
         concurrency = concurrency or multiprocessing.cpu_count() * 2
 
-        def unparsed2parsed_worker(reader_queue, page_list):
+        def unparsed2parsed_worker(reader_queue, writer_queue):
             while True:
                 unparsed_page = reader_queue.get()
                 if unparsed_page is None:
                     return
 
-                parsed = wtp.parse(unparsed_page.text)
+                try:
+                    # Certain inputs cause infinite spinning while parsing
+                    with timeout(seconds=60):
+                        parsed = wtp.parse(unparsed_page.text)
+                except TimeoutError:
+                    print(
+                        f"Wikipedia Dump Worker: timed out while parsing '{unparsed_page.title}' ({unparsed_page.id}) of length {len(unparsed_page.text)}"
+                    )
+                    continue
                 page = ParsedRawPage(
                     id=unparsed_page.id,
                     title=unparsed_page.title,
                     redirect=unparsed_page.redirect,
                     links=Counter(e.title.strip() for e in parsed.wikilinks),
                 )
-                page_list.append(page)
+                writer_queue.put(page)
 
+        reader_queue = multiprocessing.Queue(concurrency * 10)
+        writer_queue = multiprocessing.Queue()
         processes = []
-        with multiprocessing.Manager() as manager:
-            reader_queue = manager.Queue(concurrency * 10)
-            page_list = manager.list()
+        try:
             for i in range(concurrency):
                 p = multiprocessing.Process(
                     target=unparsed2parsed_worker,
-                    args=(reader_queue, page_list),
+                    args=(reader_queue, writer_queue),
                     daemon=True,
                 )
                 p.start()
@@ -295,11 +323,22 @@ class WikipediaDumpParser:
             for p in processes:
                 reader_queue.put(None)
 
-            while any(p.is_alive() for p in processes):
-                print("Wikipedia parser: Waiting for sub-processes to finish")
-                time.sleep(1)
+            pages = []
+            while True:
+                try:
+                    pages.append(writer_queue.get(False))
+                except queue.Empty:
+                    if any(p.is_alive() for p in processes):
+                        continue
+                    else:
+                        break
 
-            return list(page_list)
+            return pages
+        except Exception:
+            print("Exception raised, terminating subprocesses")
+            for p in processes:
+                p.terminate()
+            raise
 
 
 class WikipediaCanonicalPageResolver:
