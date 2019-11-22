@@ -4,6 +4,7 @@ import ujson as json
 import time
 import pickle
 from itertools import zip_longest
+import datetime
 from collections import namedtuple, defaultdict
 import graph_tool
 import graph_tool.search
@@ -15,7 +16,15 @@ GlobeCoordinate = namedtuple(
 )
 WikiDataEntry = namedtuple(
     "WikiDataEntry",
-    ["id", "sample_title", "sample_coord", "titles_by_wiki", "direct_instance_of",],
+    [
+        "id",
+        "sample_label",
+        "sample_coord",
+        "publication_date",
+        "country_of_origin",
+        "titles_by_wiki",
+        "direct_instance_of",
+    ],
 )
 
 
@@ -23,6 +32,8 @@ class WikiDataProperties:
     SUBCLASS_OF = "P279"
     INSTANCE_OF = "P31"
     COORDINATE_LOCATION = "P625"
+    COUNTRY_OF_ORIGIN = "P495"
+    PUBLICATION_DATE = "P577"
 
 
 class WikiDataInheritanceGraph:
@@ -172,6 +183,29 @@ class WikiDataParser:
         return ret
 
     @classmethod
+    def parse_country_of_origin(cls, claims, title="", line_id=""):
+        if WikiDataProperties.COUNTRY_OF_ORIGIN not in claims:
+            return None
+
+        instances = claims[WikiDataProperties.COUNTRY_OF_ORIGIN]
+        if not instances:
+            return None
+
+        value = cls.extract_snak_value(
+            instances[0], "wikibase-entityid", title=title, line_id=line_id
+        )
+
+        if (
+            value is not None
+            and "entity-type" in value
+            and value["entity-type"] == "item"
+            and "id" in value
+        ):
+            return value["id"]
+
+        return None
+
+    @classmethod
     def parse_globe_coordinate(cls, claims, title="", line_id=""):
         if WikiDataProperties.COORDINATE_LOCATION not in claims:
             return None
@@ -186,6 +220,70 @@ class WikiDataParser:
         return GlobeCoordinate(
             *(value[e] for e in ("latitude", "longitude", "altitude", "precision"))
         )
+
+    @classmethod
+    def parse_time(cls, value, title="", line_id=""):
+        if "time" not in value:
+            print(f"WARN: ({line_id} {title}) missing time key in date {value}")
+            return None
+        time = value["time"]
+
+        if "precision" not in value:
+            print(f"WARN: ({line_id} {title}) missing precision key in date {value}")
+            return None
+        precision = value["precision"]
+
+        if "calendarmodel" not in value:
+            print(f"WARN: ({line_id} {title}) missing calendar model in date {value}")
+            return None
+        cal = value["calendarmodel"]
+
+        if cal != "http://www.wikidata.org/entity/Q1985727":
+            return None
+
+        if time[0] != "+":
+            return None
+
+        if precision == 7:
+            parsed = datetime.datetime.strptime(value["time"][:5], "+%Y")
+        elif precision == 8:
+            parsed = datetime.datetime.strptime(value["time"][:5], "+%Y")
+        elif precision == 9:
+            parsed = datetime.datetime.strptime(value["time"][:5], "+%Y")
+        elif precision == 10:
+            parsed = datetime.datetime.strptime(value["time"][:8], "+%Y-%m")
+        elif precision == 11:
+            parsed = datetime.datetime.strptime(value["time"][:11], "+%Y-%m-%d")
+        elif precision == 12:
+            parsed = datetime.datetime.strptime(value["time"][:14], "+%Y-%m-%dT%H")
+        elif precision == 12:
+            parsed = datetime.datetime.strptime(value["time"][:17], "+%Y-%m-%dT%H:%M")
+        elif precision == 14:
+            parsed = datetime.datetime.strptime(value["time"], "+%Y-%m-%dT%H:%M:%SZ")
+
+        else:
+            return None
+
+        return parsed.replace(tzinfo=datetime.timezone.utc)
+
+    @classmethod
+    def parse_min_publication_date(cls, claims, title="", line_id=""):
+        if WikiDataProperties.PUBLICATION_DATE not in claims:
+            return None
+
+        min_date = None
+        dates = claims[WikiDataProperties.PUBLICATION_DATE]
+        for date in dates:
+            value = cls.extract_snak_value(date, "time", title=title, line_id=line_id)
+            if value is None:
+                print(f"WARN: Unexpected date {date}")
+                continue
+
+            time = cls.parse_time(value)
+            if not min_date or time < min_date:
+                min_date = time
+
+        return min_date.timestamp() if min_date else None
 
     @classmethod
     def inheritance_graph(cls, input_stream, limit=None):
@@ -292,8 +390,17 @@ class WikiDataParser:
                 print(loaded)
                 raise RuntimeError("No sitelinks found in entry")
 
-            english_title = None
-            sample_title = None
+            if "labels" not in loaded:
+                print(loaded)
+                raise RuntimeError("No labels in entry")
+
+            try:
+                sample_label = loaded["labels"].get(
+                    "en", next(iter(loaded["labels"].values()))
+                )["value"]
+            except StopIteration:
+                sample_label = None
+
             titles_by_wiki = {}
 
             for wiki, v in loaded["sitelinks"].items():
@@ -301,27 +408,25 @@ class WikiDataParser:
                     continue
 
                 title = v["title"]
-
-                if wiki == "enwiki":
-                    english_title = title
-
                 titles_by_wiki[wiki] = title
 
             if not titles_by_wiki:
                 continue
 
-            sample_title = english_title or next(iter(titles_by_wiki.values()))
-
             claims = loaded["claims"]
-            sample_coord = cls.parse_globe_coordinate(claims, sample_title, line_id)
-            instances = cls.parse_instances(claims, sample_title, line_id)
 
             yield WikiDataEntry(
                 line_id,
-                sample_title,
-                sample_coord,
+                sample_label,
+                sample_coord=cls.parse_globe_coordinate(claims, sample_label, line_id),
                 titles_by_wiki=titles_by_wiki,
-                direct_instance_of=instances,
+                direct_instance_of=cls.parse_instances(claims, sample_label, line_id),
+                country_of_origin=cls.parse_country_of_origin(
+                    claims, sample_label, line_id
+                ),
+                publication_date=cls.parse_min_publication_date(
+                    claims, sample_label, line_id
+                ),
             )
 
             if i % 10000 == 0:

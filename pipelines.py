@@ -4,6 +4,8 @@ import gzip
 import tempfile
 import time
 import itertools
+import shelve
+import csv
 from pagerank import pagerank_with_percentiles
 from wikidata_parser import WikiDataParser
 from wikipedia_parser import (
@@ -77,153 +79,111 @@ def store_wiki_with_pagerank(input_path, write_path, limit=None, in_memory=True)
     print("All done!")
 
 
-def write_articles_into_db(
-    db, input_path, wiki_name, rank_in_memory=True, db_batch_size=10000, limit=None
-):
+def write_articles_to_shelf(shelf, input_path, rank_in_memory=True, limit=None):
     start = time.time()
     with tempfile.NamedTemporaryFile() as f:
         store_wikipedia_pages(input_path, f.name, limit=limit)
-        for i, pages in enumerate(
-            grouper(
-                db_batch_size, augment_with_pagerank(f.name, in_memory=rank_in_memory)
-            )
+        for i, page in enumerate(
+            augment_with_pagerank(f.name, in_memory=rank_in_memory)
         ):
-            with db.con as cur:
-                cur.executemany(
-                    """
-                    INSERT INTO articles(wiki, title, id, pagerank, pagerank_percentile) 
-                    VALUES(?, ?, ?, ?, ?)
-                    """,
-                    (
-                        (wiki_name, p.title, p.id, p.pagerank, p.pagerank_percentile,)
-                        for p in pages
-                    ),
-                )
-                page_num = (i + 1) * db_batch_size
-                if page_num % 100000 == 0:
-                    delta = time.time() - start
-                    pps = page_num / delta
-                    print(
-                        f"DB Write: made it to page {page_num} in {delta:.2f}s {pps:.2f}pps"
-                    )
-        print("Finished writing!")
+            if limit and i > limit:
+                break
+
+            shelf[page.title] = page
+
+            if i % 100000 == 0:
+                delta = time.time() - start
+                pps = i / delta
+                print(f"Shelf Write: made it to page {i} in {delta:.2f}s {pps:.2f}pps")
 
 
-def write_wikidata_into_db(
-    db,
+def write_csv(
     input_path,
+    output_path,
+    wiki_to_article_shelf,
     parent_finder,
     whitelisted_wikis=None,
     limit=None,
-    db_batch_size=10000,
 ):
+    wikis = set(wiki_to_article_shelf.keys())
     start = time.time()
-    with _buffered_stream(input_path) as f:
-        for i, entries in enumerate(
-            grouper(
-                db_batch_size,
-                WikiDataParser.parse_dump(f, whitelisted_wikis=whitelisted_wikis),
-            )
-        ):
-            page_num = i * db_batch_size
-            if limit and page_num > limit:
-                break
 
-            with db.con as cur:
-                # Insert concept record
-                cur.executemany(
-                    """
-                    INSERT INTO concepts(
-                        concept_id, sample_title, coord_latitude, coord_longitude, coord_altitude, coord_precision
-                    ) 
-                    VALUES(?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        (
-                            e.id,
-                            e.sample_title,
-                            e.sample_coord and e.sample_coord.latitude,
-                            e.sample_coord and e.sample_coord.longitude,
-                            e.sample_coord and e.sample_coord.altitude,
-                            e.sample_coord and e.sample_coord.precision,
-                        )
-                        for e in entries
-                    ),
-                )
-
-                # Insert article records
-                cur.executemany(
-                    """
-                    INSERT INTO concept_articles(
-                        concept_id, wiki, article_title
-                    ) 
-                    VALUES(?, ?, ?)
-                    """,
+    with open(output_path, "w") as output:
+        writer = csv.DictWriter(
+            output,
+            delimiter="\t",
+            quotechar='"',
+            quoting=csv.QUOTE_MINIMAL,
+            fieldnames=(
+                [
+                    "concept_id",
+                    "sample_label",
+                    "coord_latitude",
+                    "coord_longitude",
+                    "coord_altitude",
+                    "coord_precision",
+                ]
+                + list(
                     itertools.chain.from_iterable(
-                        (
-                            (e.id, wiki, title,)
-                            for wiki, title in e.titles_by_wiki.items()
-                        )
-                        for e in entries
-                    ),
-                )
-
-                # Insert instance of records
-                instances = []
-                for e in entries:
-                    parent_concepts = set()
-                    for c in e.direct_instance_of:
-                        parent_finder.all_parents(c, parent_concepts)
-
-                    for parent_concept in parent_concepts:
-                        instances.append((e.id, parent_concept))
-
-                cur.executemany(
-                    """
-                    INSERT INTO concept_instance_of (
-                        concept_id,
-                        instance_of_concept_id
+                        (f"{wiki}_title", f"{wiki}_pagerank") for wiki in wikis
                     )
-                    VALUES (?, ?)
-                    """,
-                    instances,
                 )
+                + ["direct_instance_of", "instance_of",]
+            ),
+        )
 
-                if page_num % 100000 == 0:
+        writer.writeheader()
+
+        with _buffered_stream(input_path) as f:
+            for i, entry in enumerate(
+                WikiDataParser.parse_dump(f, whitelisted_wikis=whitelisted_wikis)
+            ):
+                if limit and i > limit:
+                    break
+
+                row_dict = {
+                    "concept_id": entry.id,
+                    "sample_label": entry.sample_label,
+                    "coord_latitude": entry.sample_coord
+                    and entry.sample_coord.latitude,
+                    "coord_longitude": entry.sample_coord
+                    and entry.sample_coord.longitude,
+                    "coord_altitude": entry.sample_coord
+                    and entry.sample_coord.altitude,
+                    "coord_precision": entry.sample_coord
+                    and entry.sample_coord.precision,
+                    "country_of_origin": entry.country_of_origin,
+                    "publication_date": entry.publication_date,
+                }
+
+                for wiki, shelf in wiki_to_article_shelf.items():
+                    title = entry.titles_by_wiki.get(wiki)
+                    if title:
+                        row_dict[f"{wiki}_title"] = title
+                        article = shelf.get(title)
+                        if article:
+                            row_dict[f"{wiki}_pagerank"] = article.pagerank
+                        else:
+                            row_dict[f"{wiki}_pagerank"] = None
+                    else:
+                        row_dict[f"{wiki}_title"] = None
+                        row_dict[f"{wiki}_pagerank"] = None
+
+                parent_concepts = set()
+                for c in entry.direct_instance_of:
+                    parent_finder.all_parents(c, parent_concepts)
+
+                row_dict["direct_instance_of"] = ",".join(entry.direct_instance_of)
+                row_dict["instance_of"] = ",".join(parent_concepts)
+
+                writer.writerow(row_dict)
+
+                if i % 100000 == 0:
                     delta = time.time() - start
-                    pps = page_num / delta
+                    pps = i / delta
                     print(
-                        f"DB Write: made it to page {page_num} in {delta:.2f}s {pps:.2f}pps"
+                        f"CSV Write: made it to page {i} in {delta:.2f}s {pps:.2f}pps"
                     )
-
-
-def default_instance_map(inheritance_graph):
-    def d(the_id):
-        return {e for e in inheritance_graph.descendent_ids(the_id)}
-
-    return {
-        "city": d("Q2095"),
-        "food": d("Q515"),
-        "human": d("Q5"),
-        "country": d("Q6256"),
-        "year": d("Q577"),
-        "tourist attraction": d("Q570116"),
-        "archaeological site": d("Q839954"),
-        "temple": d("Q44539"),
-        "job": d("Q192581"),
-        "higher_education": d("Q38723"),
-        "anime film": d("Q20650540"),
-        "film": d("Q11424"),
-        "building": d("Q41176"),
-        "mountain": d("Q8502"),
-        "trail": d("Q628179"),
-        "event": d("Q1656682"),
-        "television series": d("Q5398426"),
-        "website": d("Q35127"),
-        "language": d("Q34770"),
-        "human-geographic": d("Q15642541"),
-        "political-territorial-entity": d("Q1048835"),
-    }
 
 
 def store_wikidata(
@@ -236,8 +196,10 @@ def store_wikidata(
     wikidata.dump(write_path)
 
 
-def store_wikidata_inheritance_graph(input_path, write_path, limit=None):
+def wikidata_inheritance_graph(input_path, limit=None):
     with _buffered_stream(input_path) as f:
-        inheritance_graph = WikiDataParser.inheritance_graph(f)
+        return WikiDataParser.inheritance_graph(f, limit=limit)
 
-    inheritance_graph.dump(write_path)
+
+def store_wikidata_inheritance_graph(input_path, write_path, limit=None):
+    inheritance_graph.dump(wikidata_inheritance_graph(input_path))
