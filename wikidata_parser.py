@@ -283,7 +283,7 @@ class WikiDataParser:
             if not min_date or time < min_date:
                 min_date = time
 
-        return min_date.timestamp() if min_date else None
+        return int(min_date.timestamp()) if min_date else None
 
     @classmethod
     def inheritance_graph(cls, input_stream, limit=None):

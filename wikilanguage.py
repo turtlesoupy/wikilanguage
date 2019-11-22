@@ -13,12 +13,16 @@ import tempfile
 def main():
     wikidata_path = "wikis-2019-11-17/latest-all.json.bz2"
     wiki_paths = glob.glob("wikis-2019-11-17/*-pages-articles*")
-    # inheritance_path = "data/wikidata_inheritance.pickle"
-    inheritance_path = "data/test.pickle"
-    output_path = "data/test.tsv"
-    limit = 1000000
-    # whitelisted_wikis = None
-    whitelisted_wikis = {"enwiki", "jawiki"}
+
+    limit = None
+    output_path = "data/wikilanguage.tsv"
+    whitelisted_wikis = None
+    working_dir = "working-dir/"
+
+    # limit = 10000
+    # output_path = "data/test.tsv"
+    # whitelisted_wikis = {"enwiki", "jawiki"}
+    # working_dir = "working-test/"
 
     wiki_shelves = {}
     temps = []
@@ -28,26 +32,55 @@ def main():
             if whitelisted_wikis and wikiname not in whitelisted_wikis:
                 continue
 
-            temp = tempfile.NamedTemporaryFile(delete=False, suffix=".dat")
-            temp.close()
-            print(f"Main: starting write {wikiname} to {temp.name}")
-            temps.append(temp)
-            shelf = shelve.open(temp.name, flag="n")
-            wiki_shelves[wikiname] = shelf
-            in_memory = wikiname != "enwiki"
-            pipelines.write_articles_to_shelf(
-                shelf, path, rank_in_memory=in_memory, limit=limit
+            shelf_working_path = (
+                os.path.join(working_dir, f"{wikiname}") if working_dir else None
             )
 
+            if shelf_working_path and glob.glob(f"{shelf_working_path}*"):
+                print(f"Main: Reading shelf from {shelf_working_path}")
+                shelf = shelve.open(shelf_working_path)
+            else:
+                temp = tempfile.NamedTemporaryFile(delete=False)
+                temp.close()
+                os.remove(temp.name)
+                print(f"Main: starting write {wikiname} to {temp.name}")
+                temps.append(temp)
+                shelf = shelve.open(temp.name)
+                in_memory = wikiname != "enwiki"
+                pipelines.write_articles_to_shelf(
+                    shelf, path, rank_in_memory=in_memory, limit=limit
+                )
+                if shelf_working_path:
+                    for desc in glob.glob(f"{temp.name}*"):
+                        _, ext = os.path.splitext(desc)
+                        print(
+                            f"Main: copying shelf {desc} to {shelf_working_path}{ext}"
+                        )
+                        os.rename(f"{desc}", f"{shelf_working_path}{ext}")
+                    shelf = shelve.open(shelf_working_path)
+
+                wiki_shelves[wikiname] = shelf
+
         print(f"Main: done wiki writes, loading inheritance graph")
-        inheritance_graph = pipelines.wikidata_inheritance_graph(
-            wikidata_path, limit=limit
+
+        inheritance_working_path = (
+            os.path.join(working_dir, f"inheritance.pickle") if working_dir else None
         )
-        print(f"Loaded! Dumping to {inheritance_path}")
-        inheritance_graph.dump(inheritance_path)
+        if inheritance_working_path and os.path.exists(inheritance_working_path):
+            print(f"Main: loading inheritance graph from {inheritance_working_path}")
+            inheritance_graph = WikiDataInheritanceGraph.load(inheritance_working_pah)
+        else:
+            inheritance_graph = pipelines.wikidata_inheritance_graph(
+                wikidata_path, limit=limit
+            )
+            print(f"Main: Loaded inheritance graph!")
+            if inheritance_working_path:
+                print(f"Main: dumping to {inheritance_working_path}")
+                inheritance_graph.dump(inheritance_working_path)
+
         parent_finder = inheritance_graph.parent_finder()
-        inheritance_graph = None
-        print(f"Main: writing wikidata")
+        del inheritance_graph
+        print(f"Main: writing wikidata to {output_path}")
         pipelines.write_csv(
             wikidata_path,
             output_path,
@@ -56,13 +89,18 @@ def main():
             limit=limit,
             whitelisted_wikis=whitelisted_wikis,
         )
+        print(f"Done write to {output_path}!")
 
     finally:
         for shelf in wiki_shelves.values():
             shelf.close()
 
         for temp in temps:
-            os.remove(temp.name)
+            for desc in glob.glob(f"{temp.name}*"):
+                try:
+                    os.remove(desc)
+                except FileNotFoundError:
+                    pass
 
 
 if __name__ == "__main__":

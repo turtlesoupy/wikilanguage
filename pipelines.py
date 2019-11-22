@@ -122,6 +122,8 @@ def write_csv(
                     "coord_longitude",
                     "coord_altitude",
                     "coord_precision",
+                    "country_of_origin",
+                    "publication_date",
                 ]
                 + list(
                     itertools.chain.from_iterable(
