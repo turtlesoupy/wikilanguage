@@ -44,8 +44,8 @@ def load_data(datapath="data/wikilanguage.tsv", usecols=None, limit=None):
         nrows=limit,
         dtype={
             "concept_id": "str",
-            "concept_instances": "str",
-            "concept_direct_instances": "str",
+            "instance_of": "str",
+            "direct_instance_of": "str",
             "sample_label": "str",
             "country_of_origin": "str",
             "publication_date": "float",
@@ -67,7 +67,7 @@ def load_data(datapath="data/wikilanguage.tsv", usecols=None, limit=None):
 
 # Boolean indexers
 def instance_of(df, instance_of_id):
-    return df["concept_instances"].str.contains(f"{instance_of_id}[,$]", na=False)
+    return df["instance_of"].str.contains(f"{instance_of_id}[,$]", na=False)
 
 
 def country_of_origin(df, concept_id):
@@ -85,14 +85,14 @@ def resolve_label(df, label_name):
 
 
 def best_concepts(df, sample=0.1, n=200):
-    instances_of = df["concept_instances"].sample(frac=sample).str.split(",").explode()
+    instances_of = df["instance_of"].sample(frac=sample).str.split(",").explode()
     prob_mass = (
         pd.concat(
             (instances_of, df.loc[instances_of.index]["enwiki_pagerank"]),
             axis=1,
             copy=False,
         )
-        .groupby(["concept_instances"])
+        .groupby(["instance_of"])
         .sum()
         .nlargest(n, "enwiki_pagerank")
     )
@@ -112,8 +112,15 @@ def top_ranked(df, wiki, n=200):
     return ret.nlargest(n, f"{wiki}_pagerank")
 
 
-def top_kl(df, base_wiki, target_wiki, n=200, marginals=False, importance_weight=1):
-    matching_rows = df[
+def top_by_year(df, top_col="enwiki_pagerank", date_col="publication_date", n=200):
+    by_year = df.groupby(df[date_col].dt.to_period("A"))[top_col].idxmax().dropna()
+    return df.loc[by_year].nlargest(n, date_col)
+
+
+def kl_divergence(
+    df, base_wiki, target_wiki, n=200, marginals=True, importance_weight=1
+):
+    matching_rows = df.loc[
         df[f"{base_wiki}_title"].notna() & df[f"{target_wiki}_title"].notna()
     ].copy()
     if marginals:
@@ -133,9 +140,8 @@ def top_kl(df, base_wiki, target_wiki, n=200, marginals=False, importance_weight
         matching_rows[f"{target_wiki}_pagerank"]
         / matching_rows[f"{base_wiki}_pagerank"]
     )
-    ret = matching_rows[
-        [f"{base_wiki}_title", f"{target_wiki}_title", "kl_divergence", "odds_ratio"]
-    ]
-    ret["kl_relative_to_max"] = ret["kl_divergence"] / ret["kl_divergence"].max()
 
-    return ret.nlargest(n, "kl_divergence")
+    matching_rows["kl_relative_to_max"] = (
+        matching_rows["kl_divergence"] / matching_rows["kl_divergence"].max()
+    )
+    return matching_rows
