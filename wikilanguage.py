@@ -59,7 +59,7 @@ def main():
                         os.rename(f"{desc}", f"{shelf_working_path}{ext}")
                     shelf = shelve.open(shelf_working_path)
 
-                wiki_shelves[wikiname] = shelf
+            wiki_shelves[wikiname] = shelf
 
         print(f"Main: done wiki writes, loading inheritance graph")
 
@@ -68,7 +68,7 @@ def main():
         )
         if inheritance_working_path and os.path.exists(inheritance_working_path):
             print(f"Main: loading inheritance graph from {inheritance_working_path}")
-            inheritance_graph = WikiDataInheritanceGraph.load(inheritance_working_pah)
+            inheritance_graph = WikiDataInheritanceGraph.load(inheritance_working_path)
         else:
             inheritance_graph = pipelines.wikidata_inheritance_graph(
                 wikidata_path, limit=limit

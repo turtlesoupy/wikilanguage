@@ -1,6 +1,7 @@
 import io
 import bz2
 import gzip
+import functools
 import tempfile
 import time
 import itertools
@@ -24,15 +25,15 @@ def grouper(n, iterable):
 @contextmanager
 def _buffered_stream(input_path):
     bufsize = 100 * 1024 * 1024
-    if input_path.endswith(".bz2"):
+    if input_path.endswith(".gz"):
         with open(input_path, mode="rb", buffering=bufsize) as f:
-            f = bz2.BZ2File(f)
+            f = gzip.GzipFile(fileobj=f)
             f = io.BufferedReader(f, buffer_size=bufsize)
             stream = io.TextIOWrapper(f)
             yield stream
-    elif input_path.endswith(".gz"):
+    elif input_path.endswith(".bz2"):
         with open(input_path, mode="rb", buffering=bufsize) as f:
-            f = gzip.GzipFile(fileobj=f)
+            f = bz2.BZ2File(f)
             f = io.BufferedReader(f, buffer_size=bufsize)
             stream = io.TextIOWrapper(f)
             yield stream
@@ -97,6 +98,47 @@ def write_articles_to_shelf(shelf, input_path, rank_in_memory=True, limit=None):
                 print(f"Shelf Write: made it to page {i} in {delta:.2f}s {pps:.2f}pps")
 
 
+def _row_dict_from_line(
+    line, wiki_to_article_shelf, parent_finder, whitelisted_wikis=None
+):
+    entry = WikiDataParser.parse_dump_line(line, whitelisted_wikis=whitelisted_wikis)
+
+    if not entry:
+        return None
+
+    row_dict = {
+        "concept_id": entry.id,
+        "sample_label": entry.sample_label,
+        "coord_latitude": entry.sample_coord and entry.sample_coord.latitude,
+        "coord_longitude": entry.sample_coord and entry.sample_coord.longitude,
+        "coord_altitude": entry.sample_coord and entry.sample_coord.altitude,
+        "coord_precision": entry.sample_coord and entry.sample_coord.precision,
+        "country_of_origin": entry.country_of_origin,
+        "publication_date": entry.publication_date,
+    }
+
+    for wiki, shelf in wiki_to_article_shelf.items():
+        title = entry.titles_by_wiki.get(wiki)
+        if title:
+            row_dict[f"{wiki}_title"] = title
+            article = shelf.get(title)
+            if article:
+                row_dict[f"{wiki}_pagerank"] = article.pagerank
+            else:
+                row_dict[f"{wiki}_pagerank"] = None
+        else:
+            row_dict[f"{wiki}_title"] = None
+            row_dict[f"{wiki}_pagerank"] = None
+
+    parent_concepts = set()
+    for c in entry.direct_instance_of:
+        parent_finder.all_parents(c, parent_concepts)
+
+    row_dict["direct_instance_of"] = ",".join(entry.direct_instance_of)
+    row_dict["instance_of"] = ",".join(parent_concepts)
+    return row_dict
+
+
 def write_csv(
     input_path,
     output_path,
@@ -104,8 +146,14 @@ def write_csv(
     parent_finder,
     whitelisted_wikis=None,
     limit=None,
+    concurrency=None,
 ):
     wikis = set(wiki_to_article_shelf.keys())
+    print(wikis)
+    if whitelisted_wikis:
+        wikis &= set(whitelisted_wikis)
+    print(wikis)
+
     start = time.time()
 
     with open(output_path, "w") as output:
@@ -137,48 +185,18 @@ def write_csv(
         writer.writeheader()
 
         with _buffered_stream(input_path) as f:
-            for i, entry in enumerate(
-                WikiDataParser.parse_dump(f, whitelisted_wikis=whitelisted_wikis)
+            print("CSV Write: starting")
+            for i, row_dict in enumerate(
+                _row_dict_from_line(
+                    e,
+                    wiki_to_article_shelf=wiki_to_article_shelf,
+                    parent_finder=parent_finder,
+                    whitelisted_wikis=whitelisted_wikis,
+                )
+                for e in itertools.islice(f, limit)
             ):
-                if limit and i > limit:
-                    break
-
-                row_dict = {
-                    "concept_id": entry.id,
-                    "sample_label": entry.sample_label,
-                    "coord_latitude": entry.sample_coord
-                    and entry.sample_coord.latitude,
-                    "coord_longitude": entry.sample_coord
-                    and entry.sample_coord.longitude,
-                    "coord_altitude": entry.sample_coord
-                    and entry.sample_coord.altitude,
-                    "coord_precision": entry.sample_coord
-                    and entry.sample_coord.precision,
-                    "country_of_origin": entry.country_of_origin,
-                    "publication_date": entry.publication_date,
-                }
-
-                for wiki, shelf in wiki_to_article_shelf.items():
-                    title = entry.titles_by_wiki.get(wiki)
-                    if title:
-                        row_dict[f"{wiki}_title"] = title
-                        article = shelf.get(title)
-                        if article:
-                            row_dict[f"{wiki}_pagerank"] = article.pagerank
-                        else:
-                            row_dict[f"{wiki}_pagerank"] = None
-                    else:
-                        row_dict[f"{wiki}_title"] = None
-                        row_dict[f"{wiki}_pagerank"] = None
-
-                parent_concepts = set()
-                for c in entry.direct_instance_of:
-                    parent_finder.all_parents(c, parent_concepts)
-
-                row_dict["direct_instance_of"] = ",".join(entry.direct_instance_of)
-                row_dict["instance_of"] = ",".join(parent_concepts)
-
-                writer.writerow(row_dict)
+                if row_dict:
+                    writer.writerow(row_dict)
 
                 if i % 100000 == 0:
                     delta = time.time() - start
@@ -186,16 +204,6 @@ def write_csv(
                     print(
                         f"CSV Write: made it to page {i} in {delta:.2f}s {pps:.2f}pps"
                     )
-
-
-def store_wikidata(
-    input_path, write_path, instance_map={}, whitelisted_wikis=None, limit=None
-):
-    with _buffered_stream(input_path) as f:
-        wikidata = WikiDataParser.parse_dump(
-            f, whitelisted_wikis=whitelisted_wikis, instance_map=instance_map
-        )
-    wikidata.dump(write_path)
 
 
 def wikidata_inheritance_graph(input_path, limit=None):

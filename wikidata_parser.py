@@ -36,6 +36,25 @@ class WikiDataProperties:
     PUBLICATION_DATE = "P577"
 
 
+class ParentFinder:
+    def __init__(self, parents):
+        self.parents = parents
+
+    def all_parents(self, the_id, add_to_set=None):
+        the_set = set() if add_to_set is None else add_to_set
+
+        def _inner(the_id):
+            if the_id in the_set:
+                return
+
+            the_set.add(the_id)
+            for p in self.parents[the_id]:
+                _inner(p)
+
+        _inner(the_id)
+        return the_set
+
+
 class WikiDataInheritanceGraph:
     def __init__(self, line_id_to_idx, line_id_to_label, graph):
         self.line_id_to_idx = line_id_to_idx
@@ -44,24 +63,6 @@ class WikiDataInheritanceGraph:
 
     def parent_finder(self):
         # Graph tool is a bit slow for DFS on this large graph, not sure why
-
-        class ParentFinder:
-            def __init__(self, parents):
-                self.parents = parents
-
-            def all_parents(self, the_id, add_to_set=None):
-                the_set = set() if add_to_set is None else add_to_set
-
-                def _inner(the_id):
-                    if the_id in the_set:
-                        return
-
-                    the_set.add(the_id)
-                    for p in self.parents[the_id]:
-                        _inner(p)
-
-                _inner(the_id)
-                return the_set
 
         parents = defaultdict(set)
         for e in self.graph.edges():
@@ -244,24 +245,33 @@ class WikiDataParser:
         if time[0] != "+":
             return None
 
-        if precision == 7:
-            parsed = datetime.datetime.strptime(value["time"][:5], "+%Y")
-        elif precision == 8:
-            parsed = datetime.datetime.strptime(value["time"][:5], "+%Y")
-        elif precision == 9:
-            parsed = datetime.datetime.strptime(value["time"][:5], "+%Y")
-        elif precision == 10:
-            parsed = datetime.datetime.strptime(value["time"][:8], "+%Y-%m")
-        elif precision == 11:
-            parsed = datetime.datetime.strptime(value["time"][:11], "+%Y-%m-%d")
-        elif precision == 12:
-            parsed = datetime.datetime.strptime(value["time"][:14], "+%Y-%m-%dT%H")
-        elif precision == 12:
-            parsed = datetime.datetime.strptime(value["time"][:17], "+%Y-%m-%dT%H:%M")
-        elif precision == 14:
-            parsed = datetime.datetime.strptime(value["time"], "+%Y-%m-%dT%H:%M:%SZ")
-
-        else:
+        try:
+            if precision == 7:
+                parsed = datetime.datetime.strptime(value["time"][:5], "+%Y")
+            elif precision == 8:
+                parsed = datetime.datetime.strptime(value["time"][:5], "+%Y")
+            elif precision == 9:
+                parsed = datetime.datetime.strptime(value["time"][:5], "+%Y")
+            elif precision == 10:
+                parsed = datetime.datetime.strptime(value["time"][:8], "+%Y-%m")
+            elif precision == 11:
+                parsed = datetime.datetime.strptime(value["time"][:11], "+%Y-%m-%d")
+            elif precision == 12:
+                parsed = datetime.datetime.strptime(value["time"][:14], "+%Y-%m-%dT%H")
+            elif precision == 12:
+                parsed = datetime.datetime.strptime(
+                    value["time"][:17], "+%Y-%m-%dT%H:%M"
+                )
+            elif precision == 14:
+                parsed = datetime.datetime.strptime(
+                    value["time"], "+%Y-%m-%dT%H:%M:%SZ"
+                )
+            else:
+                return None
+        except ValueError:
+            print(
+                f"WARN: ({line_id} {title}) missing value error during parsing {value}"
+            )
             return None
 
         return parsed.replace(tzinfo=datetime.timezone.utc)
@@ -280,7 +290,7 @@ class WikiDataParser:
                 continue
 
             time = cls.parse_time(value)
-            if not min_date or time < min_date:
+            if time and (not min_date or time < min_date):
                 min_date = time
 
         return int(min_date.timestamp()) if min_date else None
@@ -359,82 +369,62 @@ class WikiDataParser:
         return WikiDataInheritanceGraph(line_id_to_idx, line_id_to_label, g)
 
     @classmethod
-    def parse_dump(
-        cls, input_stream, whitelisted_wikis=None, limit=None,
-    ):
-        start = time.time()
-        all_json_time = 0
+    def parse_dump_line(cls, line, whitelisted_wikis=None):
+        if not line.startswith("{"):
+            return None
 
-        whitelisted_wikis = whitelisted_wikis and set(whitelisted_wikis)
+        loaded = json.loads(line.rstrip(",\n"))
 
-        for i, line in enumerate(input_stream):
-            if not line.startswith("{"):
+        line_type = loaded["type"]
+        line_id = loaded["id"]
+
+        if line_type == "property":
+            return None
+
+        if line_type != "item":
+            print(json.dumps(loaded, indent=2))
+            print(line_type)
+            raise RuntimeError("Found non-item line")
+
+        if "sitelinks" not in loaded:
+            print(loaded)
+            raise RuntimeError("No sitelinks found in entry")
+
+        if "labels" not in loaded:
+            print(loaded)
+            raise RuntimeError("No labels in entry")
+
+        try:
+            sample_label = loaded["labels"].get(
+                "en", next(iter(loaded["labels"].values()))
+            )["value"]
+        except StopIteration:
+            sample_label = None
+
+        titles_by_wiki = {}
+
+        for wiki, v in loaded["sitelinks"].items():
+            if whitelisted_wikis is not None and wiki not in whitelisted_wikis:
                 continue
 
-            s_json = time.time()
-            loaded = json.loads(line.rstrip(",\n"))
-            all_json_time += time.time() - s_json
+            title = v["title"]
+            titles_by_wiki[wiki] = title
 
-            line_type = loaded["type"]
-            line_id = loaded["id"]
+        if not titles_by_wiki:
+            return None
 
-            if line_type == "property":
-                continue
+        claims = loaded["claims"]
 
-            if line_type != "item":
-                print(json.dumps(loaded, indent=2))
-                print(line_type)
-                raise RuntimeError("Found non-item line")
-
-            if "sitelinks" not in loaded:
-                print(loaded)
-                raise RuntimeError("No sitelinks found in entry")
-
-            if "labels" not in loaded:
-                print(loaded)
-                raise RuntimeError("No labels in entry")
-
-            try:
-                sample_label = loaded["labels"].get(
-                    "en", next(iter(loaded["labels"].values()))
-                )["value"]
-            except StopIteration:
-                sample_label = None
-
-            titles_by_wiki = {}
-
-            for wiki, v in loaded["sitelinks"].items():
-                if whitelisted_wikis is not None and wiki not in whitelisted_wikis:
-                    continue
-
-                title = v["title"]
-                titles_by_wiki[wiki] = title
-
-            if not titles_by_wiki:
-                continue
-
-            claims = loaded["claims"]
-
-            yield WikiDataEntry(
-                line_id,
-                sample_label,
-                sample_coord=cls.parse_globe_coordinate(claims, sample_label, line_id),
-                titles_by_wiki=titles_by_wiki,
-                direct_instance_of=cls.parse_instances(claims, sample_label, line_id),
-                country_of_origin=cls.parse_country_of_origin(
-                    claims, sample_label, line_id
-                ),
-                publication_date=cls.parse_min_publication_date(
-                    claims, sample_label, line_id
-                ),
-            )
-
-            if i % 10000 == 0:
-                end = time.time()
-                print(
-                    f"Reached {i} in {end - start}s [{100 * all_json_time / (end - start)}% in json]"
-                    f"({i / (end - start)} lines per second)"
-                )
-
-            if limit and i >= limit:
-                break
+        return WikiDataEntry(
+            line_id,
+            sample_label,
+            sample_coord=cls.parse_globe_coordinate(claims, sample_label, line_id),
+            titles_by_wiki=titles_by_wiki,
+            direct_instance_of=cls.parse_instances(claims, sample_label, line_id),
+            country_of_origin=cls.parse_country_of_origin(
+                claims, sample_label, line_id
+            ),
+            publication_date=cls.parse_min_publication_date(
+                claims, sample_label, line_id
+            ),
+        )
