@@ -12,6 +12,10 @@ class Concepts:
     SOCIAL_ISSUE = "Q1920219"
     CREATIVE_WORK = "Q17537576"
     POLITICAL_POWER = "Q2101636"
+    HUMAN = "Q5"
+    MUSICAL_GROUP = "Q215380"
+    WRITTEN_WORK = "Q47461344"
+    MUSICAL_WORK = "Q2188189"
     
 class Countries:
     FRANCE = "Q142"
@@ -84,11 +88,12 @@ class WikilanguageAccessor:
         return self._df.loc[[self.resolve_label(label_name, col)]]
 
     # Boolean indexers
-    def is_instance_of(self, instance_of_id):
-        return self._df["instance_of"].str.contains(f"{instance_of_id}[,$]", na=False)
+    def is_instance_of(self, instance_of_id, direct=False):
+        key = "direct_instance_of" if direct else "instance_of"
+        return self._df[key].str.contains(f"{instance_of_id}[,$]", na=False)
 
-    def instance_of(self, instance_of_id):
-        return self._df[self.is_instance_of(instance_of_id)]
+    def instance_of(self, instance_of_id, direct=False):
+        return self._df[self.is_instance_of(instance_of_id, direct=direct)]
 
     def is_country_of_origin(self, concept_id):
         return self._df["country_of_origin"] == concept_id
@@ -118,14 +123,15 @@ class WikilanguageAccessor:
     
     # Outputs
     def best_concepts(self, sample=0.1, n=200, direct=False):
-        instances_of = self._df["direct_instance_of" if direct else "instance_of"].sample(frac=sample).str.split(",").explode()
+        key = "direct_instance_of" if direct else "instance_of"
+        instances_of = self._df[key].sample(frac=sample).str.split(",").explode()
         prob_mass = (
             pd.concat(
                 (instances_of, self._df.loc[instances_of.index]["enwiki_pagerank"]),
                 axis=1,
                 copy=False,
             )
-            .groupby(["instance_of"])
+            .groupby([key])
             .sum()
             .nlargest(n, "enwiki_pagerank")
         )
