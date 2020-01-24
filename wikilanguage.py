@@ -11,8 +11,9 @@ import tempfile
 
 
 def main():
-    wikidata_path = "wikis-2019-11-17/latest-all.json.bz2"
-    wiki_paths = glob.glob("wikis-2019-11-17/*-pages-articles*")
+    wikidata_path = "data/20200101/wikidata-20200113-all.json.gz"
+    wiki_paths = glob.glob("data/20200101/*-pages-articles*")
+    wiki_paths.sort(key=lambda p: os.stat(p).st_size, reverse=True)
 
     limit = None
     output_path = "data/wikilanguage.tsv"
@@ -23,6 +24,9 @@ def main():
     # output_path = "data/test.tsv"
     # whitelisted_wikis = {"enwiki", "jawiki"}
     # working_dir = "working-test/"
+
+    if not os.path.exists(wikidata_path):
+        raise RuntimeError(f"{wikidata_path} not found!")
 
     wiki_shelves = {}
     temps = []
@@ -43,10 +47,10 @@ def main():
                 temp = tempfile.NamedTemporaryFile(delete=False)
                 temp.close()
                 os.remove(temp.name)
-                print(f"Main: starting write {wikiname} to {temp.name}")
+                in_memory = wikiname != "enwiki"
+                print(f"Main: starting write {wikiname} to {temp.name} (in_memory={in_memory})")
                 temps.append(temp)
                 shelf = shelve.open(temp.name)
-                in_memory = wikiname != "enwiki"
                 pipelines.write_articles_to_shelf(
                     shelf, path, rank_in_memory=in_memory, limit=limit
                 )

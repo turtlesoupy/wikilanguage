@@ -132,6 +132,7 @@ class WikiXMLHandler(xml.sax.ContentHandler):
         self.page_count = 0
         self.in_page = False
         self.limit = limit
+        self.revision_text_limit = 100 * 1024 * 1024 
 
         # Per page
         self.in_title = False
@@ -195,6 +196,7 @@ class WikiXMLHandler(xml.sax.ContentHandler):
             elif self.in_revision and name == "text":
                 self.in_revision_text = True
                 self.revision_text_buffer = io.StringIO()
+                self.revision_text_length = 0
             elif name == "id":
                 self.in_id = True
                 self.id_buffer = io.StringIO()
@@ -223,6 +225,7 @@ class WikiXMLHandler(xml.sax.ContentHandler):
                 self.in_revision_text = False
                 self.page_text = self.revision_text_buffer.getvalue()
                 self.revision_text_buffer = None
+                self.revision_text_length = 0
             elif name == "id":
                 self.in_id = False
                 self.page_id = self.id_buffer.getvalue().strip()
@@ -232,6 +235,11 @@ class WikiXMLHandler(xml.sax.ContentHandler):
         if self.in_title:
             self.title_buffer.write(data)
         elif self.in_revision_text:
+            if self.revision_text_length > self.revision_text_limit:
+                print(f"Hit revision text limit for {self.title_buffer.getvalue()}! Skipping")
+                return
+
+            self.revision_text_length += len(data)
             self.revision_text_buffer.write(data)
         elif self.in_id:
             self.id_buffer.write(data)

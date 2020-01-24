@@ -1,37 +1,16 @@
 import pandas as pd
 import numpy as np
 import functools
+from numpy import cos, sin, arcsin, sqrt
+from math import radians
 
 
 class Concepts:
     FILM = "Q11424"
     CITY = "Q515"
     VIDEO_GAME = "Q7889"
-
-    """
-    "city": d("Q2095"),
-    "food": d("Q515"),
-    "human": d("Q5"),
-    "country": d("Q6256"),
-    "year": d("Q577"),
-    "tourist attraction": d("Q570116"),
-    "archaeological site": d("Q839954"),
-    "temple": d("Q44539"),
-    "job": d("Q192581"),
-    "higher_education": d("Q38723"),
-    "anime film": d("Q20650540"),
-    "film": d("Q11424"),
-    "building": d("Q41176"),
-    "mountain": d("Q8502"),
-    "trail": d("Q628179"),
-    "event": d("Q1656682"),
-    "television series": d("Q5398426"),
-    "website": d("Q35127"),
-    "language": d("Q34770"),
-    "human-geographic": d("Q15642541"),
-    "political-territorial-entity": d("Q1048835"),
-    """
-
+    MUSEUM = "Q33506"
+    
 
 def load_data(datapath="data/wikilanguage.tsv", usecols=None, limit=None):
     headers = next(open(datapath)).split()
@@ -64,6 +43,16 @@ def load_data(datapath="data/wikilanguage.tsv", usecols=None, limit=None):
 
     return df
 
+def haversine(df, src_lat, src_lng):
+    target_lat = df["coord_latitude"]
+    target_lng = df["coord_longitude"]
+    src_lng, src_lat, target_lng, target_lat = map(np.radians, (src_lng, src_lat, target_lng, target_lat))
+    dlon = target_lng - src_lng 
+    dlat = target_lat - src_lat 
+    a = sin(dlat/2)**2 + cos(src_lat) * cos(src_lat) * sin(dlon/2)**2
+    c = 2 * arcsin(sqrt(a)) 
+    km = 6367 * c
+    return km
 
 # Boolean indexers
 def instance_of(df, instance_of_id):
@@ -73,7 +62,9 @@ def instance_of(df, instance_of_id):
 def country_of_origin(df, concept_id):
     return df["country_of_origin"] == concept_id
 
-
+def within_radius(df, lat, lng, radius_km=50):
+    return haversine(df, lat, lng) < radius_km
+    
 def publication_year(df, year):
     return df["publication_date"].dt.to_period("A") == str(year)
 
@@ -102,14 +93,18 @@ def best_concepts(df, sample=0.1, n=200):
     return ret
 
 
-def top_ranked(df, wiki, n=200):
+def top_ranked(df, wiki, n=200, desc=True):
     ret = df[df[f"{wiki}_title"].notna()][
-        ["enwiki_title", f"{wiki}_title", f"{wiki}_pagerank"]
+        ["sample_label", f"{wiki}_pagerank"]
     ]
     ret[f"{wiki}_relative_to_max"] = (
         ret[f"{wiki}_pagerank"] / ret[f"{wiki}_pagerank"].max()
     )
-    return ret.nlargest(n, f"{wiki}_pagerank")
+    if desc:
+        return ret.nlargest(n, f"{wiki}_pagerank")
+    else:
+        return ret.nsmallest(n, f"{wiki}_pagerank")
+    
 
 
 def top_by_year(df, top_col="enwiki_pagerank", date_col="publication_date", n=200):
