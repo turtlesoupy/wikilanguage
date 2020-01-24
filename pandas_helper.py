@@ -11,6 +11,7 @@ class Concepts:
     MUSEUM = "Q33506"
     SOCIAL_ISSUE = "Q1920219"
     CREATIVE_WORK = "Q17537576"
+    POLITICAL_POWER = "Q2101636"
     
 class Countries:
     FRANCE = "Q142"
@@ -116,8 +117,8 @@ class WikilanguageAccessor:
         return self._df[self._is_publication_year(year)]
     
     # Outputs
-    def best_concepts(self, sample=0.1, n=200):
-        instances_of = self._df["instance_of"].sample(frac=sample).str.split(",").explode()
+    def best_concepts(self, sample=0.1, n=200, direct=False):
+        instances_of = self._df["direct_instance_of" if direct else "instance_of"].sample(frac=sample).str.split(",").explode()
         prob_mass = (
             pd.concat(
                 (instances_of, self._df.loc[instances_of.index]["enwiki_pagerank"]),
