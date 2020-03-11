@@ -84,9 +84,7 @@ def write_articles_to_shelf(shelf, input_path, rank_in_memory=True, limit=None):
     start = time.time()
     with tempfile.NamedTemporaryFile() as f:
         store_wikipedia_pages(input_path, f.name, limit=limit)
-        for i, page in enumerate(
-            augment_with_pagerank(f.name, in_memory=rank_in_memory)
-        ):
+        for i, page in enumerate(augment_with_pagerank(f.name, in_memory=rank_in_memory)):
             if limit and i > limit:
                 break
 
@@ -98,9 +96,7 @@ def write_articles_to_shelf(shelf, input_path, rank_in_memory=True, limit=None):
                 print(f"Shelf Write: made it to page {i} in {delta:.2f}s {pps:.2f}pps")
 
 
-def _row_dict_from_line(
-    line, wiki_to_article_shelf, parent_finder, whitelisted_wikis=None
-):
+def _row_dict_from_line(line, wiki_to_article_shelf, parent_finder, whitelisted_wikis=None):
     entry = WikiDataParser.parse_dump_line(line, whitelisted_wikis=whitelisted_wikis)
 
     if not entry:
@@ -140,13 +136,7 @@ def _row_dict_from_line(
 
 
 def write_csv(
-    input_path,
-    output_path,
-    wiki_to_article_shelf,
-    parent_finder,
-    whitelisted_wikis=None,
-    limit=None,
-    concurrency=None,
+    input_path, output_path, wiki_to_article_shelf, parent_finder, whitelisted_wikis=None, limit=None, concurrency=None,
 ):
     wikis = set(wiki_to_article_shelf.keys())
     print(wikis)
@@ -173,11 +163,7 @@ def write_csv(
                     "country_of_origin",
                     "publication_date",
                 ]
-                + list(
-                    itertools.chain.from_iterable(
-                        (f"{wiki}_title", f"{wiki}_pagerank") for wiki in wikis
-                    )
-                )
+                + list(itertools.chain.from_iterable((f"{wiki}_title", f"{wiki}_pagerank") for wiki in wikis))
                 + ["direct_instance_of", "instance_of",]
             ),
         )
@@ -201,9 +187,7 @@ def write_csv(
                 if i % 100000 == 0:
                     delta = time.time() - start
                     pps = i / delta
-                    print(
-                        f"CSV Write: made it to page {i} in {delta:.2f}s {pps:.2f}pps"
-                    )
+                    print(f"CSV Write: made it to page {i} in {delta:.2f}s {pps:.2f}pps")
 
 
 def wikidata_inheritance_graph(input_path, limit=None):

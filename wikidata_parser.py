@@ -11,9 +11,7 @@ import graph_tool.search
 from graph_tool import GraphView
 from typing import Iterator
 
-GlobeCoordinate = namedtuple(
-    "GlobeCoordinate", ["latitude", "longitude", "altitude", "precision"]
-)
+GlobeCoordinate = namedtuple("GlobeCoordinate", ["latitude", "longitude", "altitude", "precision"])
 WikiDataEntry = namedtuple(
     "WikiDataEntry",
     [
@@ -110,9 +108,7 @@ class WikiDataInheritanceGraph:
 
     def descendent_ids(self, vertex_id):
         seen_set = set()
-        for edge in graph_tool.search.dfs_iterator(
-            self.graph, self.idx_for_id(vertex_id)
-        ):
+        for edge in graph_tool.search.dfs_iterator(self.graph, self.idx_for_id(vertex_id)):
             if edge.target() in seen_set:
                 continue
 
@@ -138,9 +134,7 @@ class WikiDataParser:
     @classmethod
     def extract_snak_value(cls, item, expected_value_type, title="", line_id=""):
         if "mainsnak" not in item:
-            raise RuntimeError(
-                f"({line_id} {title}) Main snak not found in item {item}"
-            )
+            raise RuntimeError(f"({line_id} {title}) Main snak not found in item {item}")
 
         mainsnak = item["mainsnak"]
         if "snaktype" not in mainsnak:
@@ -150,15 +144,11 @@ class WikiDataParser:
             return None
 
         if "datavalue" not in mainsnak:
-            raise RuntimeError(
-                f"({line_id} {title}) Main snak of value type without data value"
-            )
+            raise RuntimeError(f"({line_id} {title}) Main snak of value type without data value")
 
         datavalue = mainsnak["datavalue"]
         if "type" not in datavalue or datavalue["type"] != expected_value_type:
-            raise RuntimeError(
-                f"({line_id} {title}) Expected type {expected_value_type} in {datavalue}"
-            )
+            raise RuntimeError(f"({line_id} {title}) Expected type {expected_value_type} in {datavalue}")
 
         return datavalue["value"]
 
@@ -170,15 +160,8 @@ class WikiDataParser:
         ret = set()
         instances = claims[WikiDataProperties.INSTANCE_OF]
         for instance in instances:
-            value = cls.extract_snak_value(
-                instance, "wikibase-entityid", title=title, line_id=line_id
-            )
-            if (
-                value is not None
-                and "entity-type" in value
-                and value["entity-type"] == "item"
-                and "id" in value
-            ):
+            value = cls.extract_snak_value(instance, "wikibase-entityid", title=title, line_id=line_id)
+            if value is not None and "entity-type" in value and value["entity-type"] == "item" and "id" in value:
                 ret.add(value["id"])
 
         return ret
@@ -192,16 +175,9 @@ class WikiDataParser:
         if not instances:
             return None
 
-        value = cls.extract_snak_value(
-            instances[0], "wikibase-entityid", title=title, line_id=line_id
-        )
+        value = cls.extract_snak_value(instances[0], "wikibase-entityid", title=title, line_id=line_id)
 
-        if (
-            value is not None
-            and "entity-type" in value
-            and value["entity-type"] == "item"
-            and "id" in value
-        ):
+        if value is not None and "entity-type" in value and value["entity-type"] == "item" and "id" in value:
             return value["id"]
 
         return None
@@ -212,15 +188,11 @@ class WikiDataParser:
             return None
 
         coordinates = claims[WikiDataProperties.COORDINATE_LOCATION]
-        value = cls.extract_snak_value(
-            coordinates[0], "globecoordinate", title=title, line_id=line_id
-        )
+        value = cls.extract_snak_value(coordinates[0], "globecoordinate", title=title, line_id=line_id)
         if value is None:
             return None
 
-        return GlobeCoordinate(
-            *(value[e] for e in ("latitude", "longitude", "altitude", "precision"))
-        )
+        return GlobeCoordinate(*(value[e] for e in ("latitude", "longitude", "altitude", "precision")))
 
     @classmethod
     def parse_time(cls, value, title="", line_id=""):
@@ -259,19 +231,13 @@ class WikiDataParser:
             elif precision == 12:
                 parsed = datetime.datetime.strptime(value["time"][:14], "+%Y-%m-%dT%H")
             elif precision == 12:
-                parsed = datetime.datetime.strptime(
-                    value["time"][:17], "+%Y-%m-%dT%H:%M"
-                )
+                parsed = datetime.datetime.strptime(value["time"][:17], "+%Y-%m-%dT%H:%M")
             elif precision == 14:
-                parsed = datetime.datetime.strptime(
-                    value["time"], "+%Y-%m-%dT%H:%M:%SZ"
-                )
+                parsed = datetime.datetime.strptime(value["time"], "+%Y-%m-%dT%H:%M:%SZ")
             else:
                 return None
         except ValueError:
-            print(
-                f"WARN: ({line_id} {title}) missing value error during parsing {value}"
-            )
+            print(f"WARN: ({line_id} {title}) missing value error during parsing {value}")
             return None
 
         return parsed.replace(tzinfo=datetime.timezone.utc)
@@ -348,9 +314,7 @@ class WikiDataParser:
 
                 superclasses = claims[WikiDataProperties.SUBCLASS_OF]
                 for superclass in superclasses:
-                    value = cls.extract_snak_value(
-                        superclass, "wikibase-entityid", line_id=line_id
-                    )
+                    value = cls.extract_snak_value(superclass, "wikibase-entityid", line_id=line_id)
                     if (
                         value is not None
                         and "entity-type" in value
@@ -395,9 +359,7 @@ class WikiDataParser:
             raise RuntimeError("No labels in entry")
 
         try:
-            sample_label = loaded["labels"].get(
-                "en", next(iter(loaded["labels"].values()))
-            )["value"]
+            sample_label = loaded["labels"].get("en", next(iter(loaded["labels"].values())))["value"]
         except StopIteration:
             sample_label = None
 
@@ -421,10 +383,6 @@ class WikiDataParser:
             sample_coord=cls.parse_globe_coordinate(claims, sample_label, line_id),
             titles_by_wiki=titles_by_wiki,
             direct_instance_of=cls.parse_instances(claims, sample_label, line_id),
-            country_of_origin=cls.parse_country_of_origin(
-                claims, sample_label, line_id
-            ),
-            publication_date=cls.parse_min_publication_date(
-                claims, sample_label, line_id
-            ),
+            country_of_origin=cls.parse_country_of_origin(claims, sample_label, line_id),
+            publication_date=cls.parse_min_publication_date(claims, sample_label, line_id),
         )
