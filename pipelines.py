@@ -23,8 +23,8 @@ def grouper(n, iterable):
 
 
 @contextmanager
-def _buffered_stream(input_path):
-    bufsize = 100 * 1024 * 1024
+def buffered_stream(input_path, bufsize_mb=100):
+    bufsize = bufsize_mb * 1024 * 1024
     if input_path.endswith(".gz"):
         with open(input_path, mode="rb", buffering=bufsize) as f:
             f = gzip.GzipFile(fileobj=f)
@@ -44,7 +44,7 @@ def _buffered_stream(input_path):
 
 def store_wikipedia_pages(input_path, write_path, limit=None):
     print("Parsing raw pages")
-    with _buffered_stream(input_path) as f:
+    with buffered_stream(input_path) as f:
         raw_pages = WikipediaDumpParser.parsed_wikipedia_pages(f, limit=limit)
     print("Parsed! Resolving links")
     wiki_pages = list(WikipediaCanonicalPageResolver.resolve_parsed_pages(raw_pages))
@@ -170,7 +170,7 @@ def write_csv(
 
         writer.writeheader()
 
-        with _buffered_stream(input_path) as f:
+        with buffered_stream(input_path) as f:
             print("CSV Write: starting")
             for i, row_dict in enumerate(
                 _row_dict_from_line(
@@ -191,7 +191,7 @@ def write_csv(
 
 
 def wikidata_inheritance_graph(input_path, limit=None):
-    with _buffered_stream(input_path) as f:
+    with buffered_stream(input_path) as f:
         return WikiDataParser.inheritance_graph(f, limit=limit)
 
 

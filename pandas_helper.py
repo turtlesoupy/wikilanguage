@@ -3,6 +3,7 @@ import numpy as np
 import functools
 from numpy import cos, sin, arcsin, sqrt
 from math import radians
+from pipelines import buffered_stream
 
 
 class Concepts:
@@ -27,11 +28,17 @@ class Countries:
     FRANCE = "Q142"
     UNITED_KINGDOM = "Q145"
     JAPAN = "Q17"
+    ITALY = "Q38"
 
+def load_wikis(datapath):
+    datapath = str(datapath)
+    with buffered_stream(datapath, bufsize_mb=1) as f:
+        headers = next(f).split()
+    return set(e.split("_")[0] for e in headers if "wiki_" in e)  
 
-def load_data(datapath="data/wikilanguage.tsv", usecols=None, limit=None):
-    headers = next(open(datapath)).split()
-    wikis = set(e.split("_")[0] for e in headers if "wiki_" in e)
+def load_data(datapath, usecols=None, limit=None):
+    datapath = str(datapath)
+    wikis = load_wikis(datapath)
     df = pd.read_csv(
         datapath,
         sep="\t",
