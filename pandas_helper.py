@@ -30,11 +30,13 @@ class Countries:
     JAPAN = "Q17"
     ITALY = "Q38"
 
+
 def load_wikis(datapath):
     datapath = str(datapath)
     with buffered_stream(datapath, bufsize_mb=1) as f:
         headers = next(f).split()
-    return set(e.split("_")[0] for e in headers if "wiki_" in e)  
+    return set(e.split("_")[0] for e in headers if "wiki_" in e)
+
 
 def load_data(datapath, usecols=None, limit=None):
     datapath = str(datapath)
