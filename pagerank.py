@@ -6,7 +6,9 @@ import graph_tool.centrality
 
 def pagerank(canonical_collection_fn):
     print("Creating title map!")
-    title_to_logical_id = {p.title: i for (i, p) in enumerate(canonical_collection_fn())}
+    title_to_logical_id = {
+        p.title: i for (i, p) in enumerate(canonical_collection_fn())
+    }
 
     print("Adding edges")
     g = graph_tool.Graph(directed=True)
@@ -18,7 +20,9 @@ def pagerank(canonical_collection_fn):
         page_logical_id = title_to_logical_id[page.title]
         norm = sum(page.links.values())
         for link, count in page.links.items():
-            edge_weights[g.add_edge(page_logical_id, title_to_logical_id[link])] = count / norm
+            edge_weights[g.add_edge(page_logical_id, title_to_logical_id[link])] = (
+                count / norm
+            )
 
     g.ep["weight"] = edge_weights
 
@@ -34,7 +38,11 @@ def pagerank(canonical_collection_fn):
 def pagerank_with_percentiles(canonical_collection_fn):
     pageranks = np.array(list(pr for (_, pr) in pagerank(canonical_collection_fn)))
     print("Computing percentiles!")
-    percentiles = scipy.stats.rankdata(pageranks) / len(pageranks) if len(pageranks) > 0 else [1.0]
+    percentiles = (
+        scipy.stats.rankdata(pageranks) / len(pageranks)
+        if len(pageranks) > 0
+        else [1.0]
+    )
     print("Done... yielding pages with percentiles")
 
     for item in zip(canonical_collection_fn(), pageranks, percentiles):

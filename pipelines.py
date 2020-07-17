@@ -1,13 +1,13 @@
 import io
 import bz2
+import ujson
 import gzip
-import functools
 import tempfile
 import time
 import itertools
-import shelve
 from pathlib import Path
 from tqdm.auto import tqdm
+import sys
 import csv
 from pagerank import pagerank_with_percentiles
 from wikidata_parser import WikiDataParser
@@ -62,9 +62,9 @@ def buffered_lines_with_progress(input_path, bufsize_mb=100, update_frequency=20
         f = io.BufferedReader(f, buffer_size=bufsize)
         f = io.TextIOWrapper(f)
     else:
-        orig_f  = open(input_path, mode="r", buffering=bufsize)
+        orig_f = open(input_path, mode="r", buffering=bufsize)
         f = orig_f
-    
+
     try:
         i = 0
         line = f.readline()
@@ -123,7 +123,9 @@ def write_articles_to_shelf(shelf, input_path, rank_in_memory=True, limit=None):
     start = time.time()
     with tempfile.NamedTemporaryFile() as f:
         store_wikipedia_pages(input_path, f.name, limit=limit)
-        for i, page in enumerate(augment_with_pagerank(f.name, in_memory=rank_in_memory)):
+        for i, page in enumerate(
+            augment_with_pagerank(f.name, in_memory=rank_in_memory)
+        ):
             if limit and i > limit:
                 break
 
@@ -135,7 +137,9 @@ def write_articles_to_shelf(shelf, input_path, rank_in_memory=True, limit=None):
                 print(f"Shelf Write: made it to page {i} in {delta:.2f}s {pps:.2f}pps")
 
 
-def _row_dict_from_line(line, wiki_to_article_shelf, parent_finder, whitelisted_wikis=None):
+def _row_dict_from_line(
+    line, wiki_to_article_shelf, parent_finder, whitelisted_wikis=None
+):
     entry = WikiDataParser.parse_dump_line(line, whitelisted_wikis=whitelisted_wikis)
 
     if not entry:
@@ -183,16 +187,15 @@ def _row_dict_from_line(line, wiki_to_article_shelf, parent_finder, whitelisted_
 
 global _pool_shelf
 global _pool_wiki_name
+
+
 def _init_full_wiki_pool(shelf, wiki_name):
-    global _pool_shelf 
+    global _pool_shelf
     global _pool_wiki_name
 
     _pool_shelf = shelf
     _pool_wiki_name = wiki_name
 
-def _parse_wd_func(line):
-    global _pool_wiki_name
-    return WikiDataParser.parse_dump_line(line, whitelisted_wikis={_pool_wiki_name})
 
 def _parse_wd_with_shelf_func(line):
     global _pool_shelf
@@ -208,105 +211,131 @@ def _parse_wd_with_shelf_func(line):
 def write_full_wiki_csv(
     wikidata_path, output_path, article_shelf, parent_finder, wiki_name, limit=None
 ):
-    whitelisted_wikis = {wiki_name}
-    name_to_id = {} 
-
-    chunksize = 256 
-    print("Building (name -> concept) mapping")
-    pool = multiprocessing.Pool(initializer=_init_full_wiki_pool, initargs=[article_shelf, wiki_name])
-    for entry in pool.imap(_parse_wd_func, itertools.islice(buffered_lines_with_progress(wikidata_path), limit), chunksize=chunksize):
-        if not entry:
-            continue
-
-        wiki_title = entry.titles_by_wiki.get(wiki_name)
-
-        if not wiki_title:
-            continue
-
-        name_to_id[wiki_title] = entry.id
-    
+    chunksize = 256
     print("CSV Write: Starting")
-    with open(output_path, "w") as output:
-        writer = csv.DictWriter(
-            output,
-            delimiter="\t",
-            quotechar='"',
-            quoting=csv.QUOTE_MINIMAL,
-            fieldnames=(
-                [
-                    "concept_id",
-                    f"{wiki_name}_title",
-                    f"{wiki_name}_pagerank",
-                    f"{wiki_name}_pagerank_percentile",
-                    "coord_latitude",
-                    "coord_longitude",
-                    "coord_altitude",
-                    "coord_precision",
-                    "country_of_origin",
-                    "publication_date",
-                    "direct_instance_of",
-                    "recursive_instance_of",
-                    "direct_subclass_of",
-                    "recursive_subclass_of",
-                    f"{wiki_name}_inlinks",
-                    f"{wiki_name}_outlinks",
-                    f"{wiki_name}_aliases",
-                ]
-            ),
-        )
+    field_names = [
+        "concept_id",
+        f"{wiki_name}_title",
+        f"{wiki_name}_pagerank",
+        f"{wiki_name}_pagerank_percentile",
+        "coord_latitude",
+        "coord_longitude",
+        "coord_altitude",
+        "coord_precision",
+        "country_of_origin",
+        "publication_date",
+        "direct_instance_of",
+        "recursive_instance_of",
+        "direct_subclass_of",
+        "recursive_subclass_of",
+        f"{wiki_name}_inlinks",
+        f"{wiki_name}_outlinks",
+        f"{wiki_name}_aliases",
+    ]
+    csv_format_params = dict(
+        delimiter="\t", quotechar='"', quoting=csv.QUOTE_MINIMAL, fieldnames=field_names
+    )
+    csv.field_size_limit(sys.maxsize)
+    with multiprocessing.Pool(
+        initializer=_init_full_wiki_pool, initargs=[article_shelf, wiki_name]
+    ) as pool, tempfile.TemporaryDirectory() as temp_dir:
 
-        writer.writeheader()
+        tmp_intermediate_path = Path(temp_dir) / "intermediate.csv"
+        with open(tmp_intermediate_path, "w") as fw:
+            intermediate_writer = csv.DictWriter(fw, **csv_format_params)
+            intermediate_writer.writeheader()
 
-        for entry, wiki_title, article in pool.imap(
-            _parse_wd_with_shelf_func, 
-            itertools.islice(buffered_lines_with_progress(wikidata_path), limit), 
-            chunksize=chunksize
-        ):
-            if not entry:
-                continue
+            name_to_id = {}
+            for entry, wiki_title, article in pool.imap(
+                _parse_wd_with_shelf_func,
+                itertools.islice(buffered_lines_with_progress(wikidata_path), limit),
+                chunksize=chunksize,
+            ):
+                if not entry:
+                    continue
 
-            if not wiki_title:
-                continue
+                if not wiki_title:
+                    continue
 
-            if not article:
-                continue
+                name_to_id[wiki_title] = entry.id
 
-            row_dict = {
-                "concept_id": entry.id,
-                f"{wiki_name}_title": wiki_title, 
-                f"{wiki_name}_pagerank": article.pagerank,
-                f"{wiki_name}_pagerank_percentile": article.pagerank_percentile,
-                "coord_latitude": entry.sample_coord and entry.sample_coord.latitude,
-                "coord_longitude": entry.sample_coord and entry.sample_coord.longitude,
-                "coord_altitude": entry.sample_coord and entry.sample_coord.altitude,
-                "coord_precision": entry.sample_coord and entry.sample_coord.precision,
-                "country_of_origin": entry.country_of_origin,
-                "publication_date": entry.publication_date,
-            }
+                if not article:
+                    continue
 
-            row_dict[f"{wiki_name}_inlinks"] = [x for x in [(name_to_id.get(e), cnt) for e, cnt in article.inlinks.items()] if x[0]]
-            row_dict[f"{wiki_name}_outlinks"] = [x for x in [(name_to_id.get(e), cnt) for e, cnt in article.links.items()] if x[0]]
-            row_dict[f"{wiki_name}_aliases"] = list(article.aliases)
+                row_dict = {
+                    "concept_id": entry.id,
+                    f"{wiki_name}_title": wiki_title,
+                    f"{wiki_name}_pagerank": article.pagerank,
+                    f"{wiki_name}_pagerank_percentile": article.pagerank_percentile,
+                    "coord_latitude": entry.sample_coord
+                    and entry.sample_coord.latitude,
+                    "coord_longitude": entry.sample_coord
+                    and entry.sample_coord.longitude,
+                    "coord_altitude": entry.sample_coord
+                    and entry.sample_coord.altitude,
+                    "coord_precision": entry.sample_coord
+                    and entry.sample_coord.precision,
+                    "country_of_origin": entry.country_of_origin,
+                    "publication_date": entry.publication_date,
+                }
 
+                row_dict[f"{wiki_name}_inlinks"] = ujson.dumps(
+                    list(article.inlinks.items())
+                )
+                row_dict[f"{wiki_name}_outlinks"] = ujson.dumps(
+                    list(article.links.items())
+                )
+                row_dict[f"{wiki_name}_aliases"] = list(article.aliases)
 
-            recursive_instance_concepts = set()
-            for c in entry.direct_instance_of:
-                parent_finder.all_parents(c, recursive_instance_concepts)
-            row_dict["direct_instance_of"] = list(entry.direct_instance_of)
-            row_dict["recursive_instance_of"] = list(recursive_instance_concepts)
+                recursive_instance_concepts = set()
+                for c in entry.direct_instance_of:
+                    parent_finder.all_parents(c, recursive_instance_concepts)
+                row_dict["direct_instance_of"] = ujson.dumps(
+                    list(entry.direct_instance_of)
+                )
+                row_dict["recursive_instance_of"] = ujson.dumps(
+                    list(recursive_instance_concepts)
+                )
 
-            recursive_subclass_concepts = set()
-            for c in entry.direct_subclass_of:
-                parent_finder.all_parents(c, recursive_subclass_concepts)
-            row_dict["direct_subclass_of"] = list(entry.direct_subclass_of)
-            row_dict["recursive_subclass_of"] = list(recursive_subclass_concepts)
+                recursive_subclass_concepts = set()
+                for c in entry.direct_subclass_of:
+                    parent_finder.all_parents(c, recursive_subclass_concepts)
+                row_dict["direct_subclass_of"] = ujson.dumps(
+                    list(entry.direct_subclass_of)
+                )
+                row_dict["recursive_subclass_of"] = ujson.dumps(
+                    list(recursive_subclass_concepts)
+                )
 
-            writer.writerow(row_dict)
-            
+                intermediate_writer.writerow(row_dict)
+
+            with open(tmp_intermediate_path, "r") as fr, open(output_path, "w") as fw:
+                reader = csv.DictReader(fr, **csv_format_params)
+                writer = csv.DictWriter(fw, **csv_format_params)
+                writer.writeheader()
+                for row in itertools.islice(reader, 1, None):
+                    inlinks = ujson.loads(row[f"{wiki_name}_inlinks"])
+                    outlinks = ujson.loads(row[f"{wiki_name}_outlinks"])
+
+                    inlinks = [
+                        (name_to_id[k], cnt) for k, cnt in inlinks if k in name_to_id
+                    ]
+                    outlinks = [
+                        (name_to_id[k], cnt) for k, cnt in outlinks if k in name_to_id
+                    ]
+
+                    row[f"{wiki_name}_inlinks"] = ujson.dumps(inlinks)
+                    row[f"{wiki_name}_outlinks"] = ujson.dumps(outlinks)
+                    writer.writerow(row)
 
 
 def write_csv(
-    wikidata_path, output_path, wiki_to_article_shelf, parent_finder, whitelisted_wikis=None, limit=None,
+    wikidata_path,
+    output_path,
+    wiki_to_article_shelf,
+    parent_finder,
+    whitelisted_wikis=None,
+    limit=None,
 ):
     wikis = set(wiki_to_article_shelf.keys())
     print(wikis)
@@ -333,8 +362,17 @@ def write_csv(
                     "country_of_origin",
                     "publication_date",
                 ]
-                + list(itertools.chain.from_iterable((f"{wiki}_title", f"{wiki}_pagerank") for wiki in wikis))
-                + ["direct_instance_of", "recursive_instance_of", "direct_subclass_of", "recursive_subclass_of"]
+                + list(
+                    itertools.chain.from_iterable(
+                        (f"{wiki}_title", f"{wiki}_pagerank") for wiki in wikis
+                    )
+                )
+                + [
+                    "direct_instance_of",
+                    "recursive_instance_of",
+                    "direct_subclass_of",
+                    "recursive_subclass_of",
+                ]
             ),
         )
 
@@ -357,7 +395,9 @@ def write_csv(
                 if i % 100000 == 0:
                     delta = time.time() - start
                     pps = i / delta
-                    print(f"CSV Write: made it to page {i} in {delta:.2f}s {pps:.2f}pps")
+                    print(
+                        f"CSV Write: made it to page {i} in {delta:.2f}s {pps:.2f}pps"
+                    )
 
 
 def wikidata_inheritance_graph(input_path, limit=None):
