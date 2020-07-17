@@ -1,5 +1,4 @@
 from bidict import bidict
-import pygtrie
 import ujson as json
 import time
 import pickle
@@ -22,6 +21,7 @@ WikiDataEntry = namedtuple(
         "country_of_origin",
         "titles_by_wiki",
         "direct_instance_of",
+        "direct_subclass_of",
     ],
 )
 
@@ -153,7 +153,7 @@ class WikiDataParser:
         return datavalue["value"]
 
     @classmethod
-    def parse_instances(cls, claims, instance_map, title="", line_id=""):
+    def parse_instances(cls, claims, title="", line_id=""):
         if WikiDataProperties.INSTANCE_OF not in claims:
             return set()
 
@@ -161,6 +161,20 @@ class WikiDataParser:
         instances = claims[WikiDataProperties.INSTANCE_OF]
         for instance in instances:
             value = cls.extract_snak_value(instance, "wikibase-entityid", title=title, line_id=line_id)
+            if value is not None and "entity-type" in value and value["entity-type"] == "item" and "id" in value:
+                ret.add(value["id"])
+
+        return ret
+    
+    @classmethod
+    def parse_subclass_ofs(cls, claims, title="", line_id=""):
+        if WikiDataProperties.SUBCLASS_OF not in claims:
+            return set()
+        
+        ret = set()
+        subclasses = claims[WikiDataProperties.SUBCLASS_OF]
+        for subclass in subclasses:
+            value = cls.extract_snak_value(subclass, "wikibase-entityid", title=title, line_id=line_id)
             if value is not None and "entity-type" in value and value["entity-type"] == "item" and "id" in value:
                 ret.add(value["id"])
 
@@ -383,6 +397,7 @@ class WikiDataParser:
             sample_coord=cls.parse_globe_coordinate(claims, sample_label, line_id),
             titles_by_wiki=titles_by_wiki,
             direct_instance_of=cls.parse_instances(claims, sample_label, line_id),
+            direct_subclass_of=cls.parse_subclass_ofs(claims, sample_label, line_id),
             country_of_origin=cls.parse_country_of_origin(claims, sample_label, line_id),
             publication_date=cls.parse_min_publication_date(claims, sample_label, line_id),
         )
