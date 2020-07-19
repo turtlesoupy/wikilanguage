@@ -286,7 +286,7 @@ class timeout:
 class WikipediaDumpParser:
     @classmethod
     def parsed_wikipedia_pages(cls, stream, limit=None, concurrency=None):
-        concurrency = concurrency or multiprocessing.cpu_count() * 2
+        concurrency = concurrency or multiprocessing.cpu_count()
 
         def unparsed2parsed_worker(reader_queue, writer_queue):
             while True:

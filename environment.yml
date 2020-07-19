@@ -23,5 +23,4 @@ dependencies:
   - urllib3=1.25.8
   - zlib=1.2.11
   - pip:
-    - pygtrie==2.3.2
     - wikitextparser==0.29.1

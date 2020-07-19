@@ -1,24 +1,29 @@
-import itertools
 import tempfile
 import pipelines
-import time
 import os
+from wikidata_parser import WikiDataInheritanceGraph
 import glob
-from collections import defaultdict, OrderedDict
-from wikidata_parser import WikiDataParser, WikiDataInheritanceGraph
 import shelve
-import tempfile
+import logging
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def main():
-    wikidata_path = "data/20200101/wikidata-20200113-all.json.gz"
-    wiki_paths = glob.glob("data/20200101/*-pages-articles*")
+    logging.basicConfig(level=logging.INFO)
+
+    data_dir = Path("/mnt/evo/projects/wikilanguage/data/20200701")
+    wikidata_path = data_dir / "wikidata-20200706-all.json.gz"
+    wiki_paths = list(data_dir.glob("*-pages-articles*"))
     wiki_paths.sort(key=lambda p: os.stat(p).st_size, reverse=True)
 
     limit = None
-    output_path = "data/wikilanguage.tsv"
+    output_path = data_dir / "wikilanguage.tsv"
     whitelisted_wikis = None
-    working_dir = "working-dir/"
+    working_dir = "working-dir-20200701/"
+
+    logging.info(f"Wiki paths: {wiki_paths}")
 
     # limit = 10000
     # output_path = "data/test.tsv"
@@ -31,9 +36,9 @@ def main():
     wiki_shelves = {}
     temps = []
     try:
-        for path in wiki_paths:
-            wikiname = os.path.basename(path).split("-")[0]
-            if whitelisted_wikis and wikiname not in whitelisted_wikis:
+        for wiki_path in wiki_paths:
+            wikiname = os.path.basename(str(wiki_path)).split("-")[0]
+            if whitelisted_wikis is not None and wikiname not in whitelisted_wikis:
                 continue
 
             shelf_working_path = (
@@ -41,25 +46,25 @@ def main():
             )
 
             if shelf_working_path and glob.glob(f"{shelf_working_path}*"):
-                print(f"Main: Reading shelf from {shelf_working_path}")
+                logger.info(f"Reading shelf from {shelf_working_path}")
                 shelf = shelve.open(shelf_working_path)
             else:
                 temp = tempfile.NamedTemporaryFile(delete=False)
                 temp.close()
                 os.remove(temp.name)
                 in_memory = wikiname != "enwiki"
-                print(
+                logger.info(
                     f"Main: starting write {wikiname} to {temp.name} (in_memory={in_memory})"
                 )
                 temps.append(temp)
                 shelf = shelve.open(temp.name)
                 pipelines.write_articles_to_shelf(
-                    shelf, path, rank_in_memory=in_memory, limit=limit
+                    shelf, str(wiki_path), rank_in_memory=in_memory, limit=limit
                 )
                 if shelf_working_path:
                     for desc in glob.glob(f"{temp.name}*"):
                         _, ext = os.path.splitext(desc)
-                        print(
+                        logger.info(
                             f"Main: copying shelf {desc} to {shelf_working_path}{ext}"
                         )
                         os.rename(f"{desc}", f"{shelf_working_path}{ext}")
@@ -67,35 +72,35 @@ def main():
 
             wiki_shelves[wikiname] = shelf
 
-        print(f"Main: done wiki writes, loading inheritance graph")
+        logger.info(f"Done wiki writes, loading inheritance graph")
 
         inheritance_working_path = (
             os.path.join(working_dir, f"inheritance.pickle") if working_dir else None
         )
         if inheritance_working_path and os.path.exists(inheritance_working_path):
-            print(f"Main: loading inheritance graph from {inheritance_working_path}")
+            logger.info(f"Loading inheritance graph from {inheritance_working_path}")
             inheritance_graph = WikiDataInheritanceGraph.load(inheritance_working_path)
         else:
             inheritance_graph = pipelines.wikidata_inheritance_graph(
-                wikidata_path, limit=limit
+                str(wikidata_path), limit=limit
             )
-            print(f"Main: Loaded inheritance graph!")
+            logger.info(f"Loaded inheritance graph!")
             if inheritance_working_path:
-                print(f"Main: dumping to {inheritance_working_path}")
+                logger.info(f"Dumping to {inheritance_working_path}")
                 inheritance_graph.dump(inheritance_working_path)
 
         parent_finder = inheritance_graph.parent_finder()
         del inheritance_graph
-        print(f"Main: writing wikidata to {output_path}")
+        logger.info(f"Writing wikidata to {output_path}")
         pipelines.write_csv(
-            wikidata_path,
-            output_path,
+            str(wikidata_path),
+            str(output_path),
             wiki_shelves,
             parent_finder,
             limit=limit,
             whitelisted_wikis=whitelisted_wikis,
         )
-        print(f"Done write to {output_path}!")
+        logger.info(f"Done write to {output_path}!")
 
     finally:
         for shelf in wiki_shelves.values():

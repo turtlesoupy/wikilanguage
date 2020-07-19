@@ -1,9 +1,9 @@
 import io
 import bz2
+import logging
 import ujson
 import gzip
 import tempfile
-import time
 import itertools
 from pathlib import Path
 from tqdm.auto import tqdm
@@ -18,6 +18,8 @@ from wikipedia_parser import (
 )
 from contextlib import contextmanager
 import multiprocessing
+
+logger = logging.getLogger(__name__)
 
 
 def grouper(n, iterable):
@@ -82,13 +84,13 @@ def buffered_lines_with_progress(input_path, bufsize_mb=100, update_frequency=20
 
 
 def store_wikipedia_pages(input_path, write_path, limit=None):
-    print("Parsing raw pages")
+    logger.info("store_wikipedia_pages: Parsing raw pages")
     with buffered_stream(input_path) as f:
         raw_pages = WikipediaDumpParser.parsed_wikipedia_pages(f, limit=limit)
-    print("Parsed! Resolving links")
+    logger.info("store_wikipedia_pages: Parsed! Resolving links")
     wiki_pages = list(WikipediaCanonicalPageResolver.resolve_parsed_pages(raw_pages))
     wiki_pages.sort(key=lambda x: x.title)
-    print("Writing results")
+    logger.info("store_wikipedia_pages: Writing results")
     WikipediaCanonicalPage.dump_collection(wiki_pages, write_path)
 
 
@@ -116,73 +118,17 @@ def store_wiki_with_pagerank(input_path, write_path, limit=None, in_memory=True)
         WikipediaCanonicalPage.dump_collection(
             augment_with_pagerank(f.name, in_memory=in_memory), write_path,
         )
-    print("All done!")
 
 
 def write_articles_to_shelf(shelf, input_path, rank_in_memory=True, limit=None):
-    start = time.time()
     with tempfile.NamedTemporaryFile() as f:
+        logger.info("write_articles_to_shelf: storing wikipedia pages")
         store_wikipedia_pages(input_path, f.name, limit=limit)
+        logger.info("write_articles_to_shelf: augmenting with page rank")
         for i, page in enumerate(
-            augment_with_pagerank(f.name, in_memory=rank_in_memory)
+            tqdm(augment_with_pagerank(f.name, in_memory=rank_in_memory))
         ):
-            if limit and i > limit:
-                break
-
             shelf[page.title] = page
-
-            if i % 100000 == 0:
-                delta = time.time() - start
-                pps = i / delta
-                print(f"Shelf Write: made it to page {i} in {delta:.2f}s {pps:.2f}pps")
-
-
-def _row_dict_from_line(
-    line, wiki_to_article_shelf, parent_finder, whitelisted_wikis=None
-):
-    entry = WikiDataParser.parse_dump_line(line, whitelisted_wikis=whitelisted_wikis)
-
-    if not entry:
-        return None
-
-    row_dict = {
-        "concept_id": entry.id,
-        "sample_label": entry.sample_label,
-        "coord_latitude": entry.sample_coord and entry.sample_coord.latitude,
-        "coord_longitude": entry.sample_coord and entry.sample_coord.longitude,
-        "coord_altitude": entry.sample_coord and entry.sample_coord.altitude,
-        "coord_precision": entry.sample_coord and entry.sample_coord.precision,
-        "country_of_origin": entry.country_of_origin,
-        "publication_date": entry.publication_date,
-    }
-
-    for wiki, shelf in wiki_to_article_shelf.items():
-        title = entry.titles_by_wiki.get(wiki)
-        if title:
-            row_dict[f"{wiki}_title"] = title
-            article = shelf.get(title)
-            if article:
-                row_dict[f"{wiki}_pagerank"] = article.pagerank
-            else:
-                row_dict[f"{wiki}_pagerank"] = None
-        else:
-            row_dict[f"{wiki}_title"] = None
-            row_dict[f"{wiki}_pagerank"] = None
-
-    recursive_instance_concepts = set()
-    for c in entry.direct_instance_of:
-        parent_finder.all_parents(c, recursive_instance_concepts)
-
-    row_dict["direct_instance_of"] = ",".join(entry.direct_instance_of)
-    row_dict["recursive_instance_of"] = ",".join(recursive_instance_concepts)
-
-    recursive_subclass_concepts = set()
-    for c in entry.direct_subclass_of:
-        parent_finder.all_parents(c, recursive_subclass_concepts)
-    row_dict["direct_subclass_of"] = list(entry.direct_subclass_of)
-    row_dict["recursive_subclass_of"] = list(recursive_subclass_concepts)
-
-    return row_dict
 
 
 global _pool_shelf
@@ -329,6 +275,54 @@ def write_full_wiki_csv(
                     writer.writerow(row)
 
 
+def _row_dict_from_line(
+    line, wiki_to_article_shelf, parent_finder, whitelisted_wikis=None
+):
+    entry = WikiDataParser.parse_dump_line(line, whitelisted_wikis=whitelisted_wikis)
+
+    if not entry:
+        return None
+
+    row_dict = {
+        "concept_id": entry.id,
+        "sample_label": entry.sample_label,
+        "coord_latitude": entry.sample_coord and entry.sample_coord.latitude,
+        "coord_longitude": entry.sample_coord and entry.sample_coord.longitude,
+        "coord_altitude": entry.sample_coord and entry.sample_coord.altitude,
+        "coord_precision": entry.sample_coord and entry.sample_coord.precision,
+        "country_of_origin": entry.country_of_origin,
+        "publication_date": entry.publication_date,
+    }
+
+    for wiki, shelf in wiki_to_article_shelf.items():
+        title = entry.titles_by_wiki.get(wiki)
+        if title:
+            row_dict[f"{wiki}_title"] = title
+            article = shelf.get(title)
+            if article:
+                row_dict[f"{wiki}_pagerank"] = article.pagerank
+            else:
+                row_dict[f"{wiki}_pagerank"] = None
+        else:
+            row_dict[f"{wiki}_title"] = None
+            row_dict[f"{wiki}_pagerank"] = None
+
+    recursive_instance_concepts = set()
+    for c in entry.direct_instance_of:
+        parent_finder.all_parents(c, recursive_instance_concepts)
+
+    row_dict["direct_instance_of"] = ",".join(entry.direct_instance_of)
+    row_dict["recursive_instance_of"] = ",".join(recursive_instance_concepts)
+
+    recursive_subclass_concepts = set()
+    for c in entry.direct_subclass_of:
+        parent_finder.all_parents(c, recursive_subclass_concepts)
+    row_dict["direct_subclass_of"] = list(entry.direct_subclass_of)
+    row_dict["recursive_subclass_of"] = list(recursive_subclass_concepts)
+
+    return row_dict
+
+
 def write_csv(
     wikidata_path,
     output_path,
@@ -336,14 +330,13 @@ def write_csv(
     parent_finder,
     whitelisted_wikis=None,
     limit=None,
+    concurrency=None,
 ):
     wikis = set(wiki_to_article_shelf.keys())
-    print(wikis)
     if whitelisted_wikis:
         wikis &= set(whitelisted_wikis)
-    print(wikis)
 
-    start = time.time()
+    logger.info(f"Writing CSVs for {wikis}")
 
     with open(output_path, "w") as output:
         writer = csv.DictWriter(
@@ -378,32 +371,17 @@ def write_csv(
 
         writer.writeheader()
 
-        with buffered_stream(wikidata_path) as f:
-            print("CSV Write: starting")
-            for i, row_dict in enumerate(
-                _row_dict_from_line(
-                    e,
-                    wiki_to_article_shelf=wiki_to_article_shelf,
-                    parent_finder=parent_finder,
-                    whitelisted_wikis=whitelisted_wikis,
-                )
-                for e in itertools.islice(f, limit)
-            ):
-                if row_dict:
-                    writer.writerow(row_dict)
+        for line in itertools.islice(buffered_lines_with_progress(wikidata_path), limit):
+            row_dict = _row_dict_from_line(
+                line, wiki_to_article_shelf, parent_finder, whitelisted_wikis=whitelisted_wikis,
+            )
 
-                if i % 100000 == 0:
-                    delta = time.time() - start
-                    pps = i / delta
-                    print(
-                        f"CSV Write: made it to page {i} in {delta:.2f}s {pps:.2f}pps"
-                    )
+            if not row_dict:
+                continue
+
+            writer.writerow(row_dict)
 
 
 def wikidata_inheritance_graph(input_path, limit=None):
-    with buffered_stream(input_path) as f:
-        return WikiDataParser.inheritance_graph(f, limit=limit)
-
-
-def store_wikidata_inheritance_graph(input_path, write_path, limit=None):
-    inheritance_graph.dump(wikidata_inheritance_graph(input_path))
+    stream = buffered_lines_with_progress(input_path)
+    return WikiDataParser.inheritance_graph(stream, limit=limit)
