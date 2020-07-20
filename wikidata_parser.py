@@ -307,7 +307,7 @@ class WikiDataParser:
         for date in dates:
             value = cls.extract_snak_value(date, "time", title=title, line_id=line_id)
             if value is None:
-                print(f"WARN: Unexpected date {date}")
+                print(f"WARN: Unexpected date in '{title}' line {line_id}: {date}")
                 continue
 
             time = cls.parse_time(value)

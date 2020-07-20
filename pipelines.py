@@ -19,12 +19,14 @@ from wikipedia_parser import (
 from contextlib import contextmanager
 import multiprocessing
 
+from typing import Iterable
+
 logger = logging.getLogger(__name__)
 
 
 def grouper(n, iterable):
     args = [iter(iterable)] * n
-    return ([e for e in t if e != None] for t in itertools.zip_longest(*args))
+    return ([e for e in t if e is not None] for t in itertools.zip_longest(*args))
 
 
 @contextmanager
@@ -48,6 +50,7 @@ def buffered_stream(input_path, bufsize_mb=100):
 
 
 def buffered_lines_with_progress(input_path, bufsize_mb=100, update_frequency=2000):
+    input_path = str(input_path)
     size = Path(input_path).stat().st_size
     bufsize = bufsize_mb * 1024 * 1024
     last_update = 0
@@ -131,34 +134,64 @@ def write_articles_to_shelf(shelf, input_path, rank_in_memory=True, limit=None):
             shelf[page.title] = page
 
 
+def write_aliases_to_shelf(articles: Iterable[WikipediaCanonicalPage], shelf):
+    for article in articles:
+        shelf[article.name] = article.name
+        for alias in article.aliases:
+            shelf[alias] = article.title
+
+
 global _pool_shelf
+global _pool_alias_map
 global _pool_wiki_name
 
 
-def _init_full_wiki_pool(shelf, wiki_name):
+def _init_full_wiki_pool(shelf, alias_map, wiki_name):
     global _pool_shelf
+    global _pool_alias_map
     global _pool_wiki_name
 
     _pool_shelf = shelf
+    _pool_alias_map = alias_map
     _pool_wiki_name = wiki_name
 
 
 def _parse_wd_with_shelf_func(line):
     global _pool_shelf
+    global _pool_alias_map
     global _pool_wiki_name
 
     entry = WikiDataParser.parse_dump_line(line, whitelisted_wikis={_pool_wiki_name})
     wiki_title = entry and entry.titles_by_wiki.get(_pool_wiki_name)
-    article = wiki_title and _pool_shelf.get(wiki_title)
+    article = None
+    aliased_from = None
 
-    return (entry, wiki_title, article)
+    if wiki_title:
+        article = _pool_shelf.get(wiki_title)
+        if not article:
+            alias = _pool_alias_map.get(wiki_title)
+            if alias:
+                article = _pool_shelf.get(alias)
+                if article:
+                    aliased_from = wiki_title
+                    wiki_title = alias
+
+    return (entry, wiki_title, article, aliased_from)
+
+
+def build_alias_map(article_shelf, limit=None):
+    return dict(itertools.chain.from_iterable(
+        (
+            ((alias, article_name) for alias in article.aliases)
+            for article_name, article in itertools.islice(article_shelf.items(), limit)
+        )
+    ))
 
 
 def write_full_wiki_csv(
-    wikidata_path, output_path, article_shelf, parent_finder, wiki_name, limit=None
+    wikidata_path, output_path, article_shelf, parent_finder, wiki_name, alias_map, limit=None
 ):
     chunksize = 256
-    print("CSV Write: Starting")
     field_names = [
         "concept_id",
         f"{wiki_name}_title",
@@ -182,31 +215,44 @@ def write_full_wiki_csv(
         delimiter="\t", quotechar='"', quoting=csv.QUOTE_MINIMAL, fieldnames=field_names
     )
     csv.field_size_limit(sys.maxsize)
-    with multiprocessing.Pool(
-        initializer=_init_full_wiki_pool, initargs=[article_shelf, wiki_name]
-    ) as pool, tempfile.TemporaryDirectory() as temp_dir:
+    num_considered = 0
+    num_empty = 0
+    num_no_title = 0
+    num_missing_article = 0
+    num_aliases = 0
 
+    logging.info("Writing TSV")
+    with multiprocessing.Pool(
+        initializer=_init_full_wiki_pool, initargs=[article_shelf, alias_map, wiki_name]
+    ) as pool, tempfile.TemporaryDirectory() as temp_dir:
         tmp_intermediate_path = Path(temp_dir) / "intermediate.csv"
         with open(tmp_intermediate_path, "w") as fw:
             intermediate_writer = csv.DictWriter(fw, **csv_format_params)
             intermediate_writer.writeheader()
 
             name_to_id = {}
-            for entry, wiki_title, article in pool.imap(
+            for entry, wiki_title, article, aliased_from in pool.imap(
                 _parse_wd_with_shelf_func,
                 itertools.islice(buffered_lines_with_progress(wikidata_path), limit),
                 chunksize=chunksize,
             ):
+                num_considered += 1
                 if not entry:
+                    num_empty += 1
                     continue
 
                 if not wiki_title:
+                    num_no_title += 1
                     continue
-
-                name_to_id[wiki_title] = entry.id
 
                 if not article:
+                    num_missing_article += 1
                     continue
+
+                if aliased_from:
+                    num_aliases += 1
+
+                name_to_id[wiki_title] = entry.id
 
                 row_dict = {
                     "concept_id": entry.id,
@@ -255,28 +301,37 @@ def write_full_wiki_csv(
 
                 intermediate_writer.writerow(row_dict)
 
-            with open(tmp_intermediate_path, "r") as fr, open(output_path, "w") as fw:
-                reader = csv.DictReader(fr, **csv_format_params)
-                writer = csv.DictWriter(fw, **csv_format_params)
-                writer.writeheader()
-                for row in itertools.islice(reader, 1, None):
-                    inlinks = ujson.loads(row[f"{wiki_name}_inlinks"])
-                    outlinks = ujson.loads(row[f"{wiki_name}_outlinks"])
+        with open(tmp_intermediate_path, "r") as fr, open(output_path, "w") as fw:
+            reader = csv.DictReader(fr, **csv_format_params)
+            writer = csv.DictWriter(fw, **csv_format_params)
+            writer.writeheader()
+            for row in itertools.islice(reader, 1, None):
+                inlinks = ujson.loads(row[f"{wiki_name}_inlinks"])
+                outlinks = ujson.loads(row[f"{wiki_name}_outlinks"])
 
-                    inlinks = [
-                        (name_to_id[k], cnt) for k, cnt in inlinks if k in name_to_id
-                    ]
-                    outlinks = [
-                        (name_to_id[k], cnt) for k, cnt in outlinks if k in name_to_id
-                    ]
+                inlinks = [
+                    (name_to_id[k], cnt) for k, cnt in inlinks if k in name_to_id
+                ]
+                outlinks = [
+                    (name_to_id[k], cnt) for k, cnt in outlinks if k in name_to_id
+                ]
 
-                    row[f"{wiki_name}_inlinks"] = ujson.dumps(inlinks)
-                    row[f"{wiki_name}_outlinks"] = ujson.dumps(outlinks)
-                    writer.writerow(row)
+                row[f"{wiki_name}_inlinks"] = ujson.dumps(inlinks)
+                row[f"{wiki_name}_outlinks"] = ujson.dumps(outlinks)
+                writer.writerow(row)
+    
+        print(f"""
+STATS:
+Considered: {num_considered}
+Empty: {(100 * num_empty / num_considered):.2f}%
+{wiki_name} Aliases: {100 * num_aliases / num_considered:.2f}%
+{wiki_name} Missing Title: {100 * num_no_title / num_considered:.2f}%
+{wiki_name} Missing Article: {100 * num_missing_article / num_considered:.2f}%
+    """.strip())
 
 
 def _row_dict_from_line(
-    line, wiki_to_article_shelf, parent_finder, whitelisted_wikis=None
+    line, wiki_to_article_shelf, wiki_to_alias_shelf, parent_finder, whitelisted_wikis=None
 ):
     entry = WikiDataParser.parse_dump_line(line, whitelisted_wikis=whitelisted_wikis)
 
@@ -297,11 +352,17 @@ def _row_dict_from_line(
     for wiki, shelf in wiki_to_article_shelf.items():
         title = entry.titles_by_wiki.get(wiki)
         if title:
-            row_dict[f"{wiki}_title"] = title
             article = shelf.get(title)
+            if not article:
+                alias = wiki_to_alias_shelf[wiki].get(title)
+                if alias:
+                    article = shelf.get(alias)
+
             if article:
+                row_dict[f"{wiki}_title"] = article.title
                 row_dict[f"{wiki}_pagerank"] = article.pagerank
             else:
+                row_dict[f"{wiki}_title"] = title
                 row_dict[f"{wiki}_pagerank"] = None
         else:
             row_dict[f"{wiki}_title"] = None
@@ -327,6 +388,7 @@ def write_csv(
     wikidata_path,
     output_path,
     wiki_to_article_shelf,
+    wiki_to_alias_shelf,
     parent_finder,
     whitelisted_wikis=None,
     limit=None,
@@ -335,6 +397,9 @@ def write_csv(
     wikis = set(wiki_to_article_shelf.keys())
     if whitelisted_wikis:
         wikis &= set(whitelisted_wikis)
+
+    if set(wiki_to_alias_shelf.keys()) != wikis:
+        raise RuntimeError("Missing or additional alias shelf")
 
     logger.info(f"Writing CSVs for {wikis}")
 
@@ -373,7 +438,7 @@ def write_csv(
 
         for line in itertools.islice(buffered_lines_with_progress(wikidata_path), limit):
             row_dict = _row_dict_from_line(
-                line, wiki_to_article_shelf, parent_finder, whitelisted_wikis=whitelisted_wikis,
+                line, wiki_to_article_shelf, wiki_to_alias_shelf, parent_finder, whitelisted_wikis=whitelisted_wikis,
             )
 
             if not row_dict:

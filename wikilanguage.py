@@ -34,6 +34,7 @@ def main():
         raise RuntimeError(f"{wikidata_path} not found!")
 
     wiki_shelves = {}
+    alias_shelves = {}
     temps = []
     try:
         for wiki_path in wiki_paths:
@@ -41,13 +42,17 @@ def main():
             if whitelisted_wikis is not None and wikiname not in whitelisted_wikis:
                 continue
 
-            shelf_working_path = (
+            alias_shelf_working_path = (
+                os.path.join(working_dir, f"aliases_{wikiname}") if working_dir else None
+            )
+            wiki_shelf_working_path = (
                 os.path.join(working_dir, f"{wikiname}") if working_dir else None
             )
 
-            if shelf_working_path and glob.glob(f"{shelf_working_path}*"):
-                logger.info(f"Reading shelf from {shelf_working_path}")
-                shelf = shelve.open(shelf_working_path)
+            # Build main wiki shelf
+            if wiki_shelf_working_path and glob.glob(f"{wiki_shelf_working_path}*"):
+                logger.info(f"Reading shelf from {wiki_shelf_working_path}")
+                shelf = shelve.open(wiki_shelf_working_path)
             else:
                 temp = tempfile.NamedTemporaryFile(delete=False)
                 temp.close()
@@ -61,16 +66,42 @@ def main():
                 pipelines.write_articles_to_shelf(
                     shelf, str(wiki_path), rank_in_memory=in_memory, limit=limit
                 )
-                if shelf_working_path:
+                if wiki_shelf_working_path:
                     for desc in glob.glob(f"{temp.name}*"):
                         _, ext = os.path.splitext(desc)
                         logger.info(
-                            f"Main: copying shelf {desc} to {shelf_working_path}{ext}"
+                            f"Copying shelf {desc} to {wiki_shelf_working_path}{ext}"
                         )
-                        os.rename(f"{desc}", f"{shelf_working_path}{ext}")
-                    shelf = shelve.open(shelf_working_path)
+                        os.rename(f"{desc}", f"{wiki_shelf_working_path}{ext}")
+                    shelf = shelve.open(wiki_shelf_working_path)
 
             wiki_shelves[wikiname] = shelf
+
+            # Build alias shelves
+            if alias_shelf_working_path and glob.glob(f"{alias_shelf_working_path}*"):
+                logger.info(f"Reading alias shelf from {alias_shelf_working_path}")
+                alias_shelf = shelve.open(alias_shelf_working_path)
+            else:
+                logger.info(
+                    f"Writing alias shelf for {wikiname}"
+                )
+                temp = tempfile.NamedTemporaryFile(delete=False)
+                temp.close()
+                os.remove(temp.name)
+                temps.append(temp)
+                alias_shelf = shelve.open(temp.name)
+                pipelines.write_aliases_to_shelf(shelf.items(), alias_shelf)
+                
+                if alias_shelf_working_path:
+                    for desc in glob.glob(f"{temp.name}*"):
+                        _, ext = os.path.splitext(desc)
+                        logger.info(
+                            f"Copying alias shelf {desc} to {alias_shelf_working_path}{ext}"
+                        )
+                        os.rename(f"{desc}", f"{alias_shelf_working_path}{ext}")
+                    alias_shelf = shelve.open(alias_shelf_working_path)
+
+            alias_shelves[wikiname] = alias_shelf
 
         logger.info(f"Done wiki writes, loading inheritance graph")
 
@@ -96,6 +127,7 @@ def main():
             str(wikidata_path),
             str(output_path),
             wiki_shelves,
+            alias_shelves,
             parent_finder,
             limit=limit,
             whitelisted_wikis=whitelisted_wikis,
