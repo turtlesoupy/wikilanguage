@@ -19,7 +19,7 @@ from wikipedia_parser import (
 from contextlib import contextmanager
 import multiprocessing
 
-from typing import Iterable
+from typing import Iterable, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -134,11 +134,11 @@ def write_articles_to_shelf(shelf, input_path, rank_in_memory=True, limit=None):
             shelf[page.title] = page
 
 
-def write_aliases_to_shelf(articles: Iterable[WikipediaCanonicalPage], shelf):
-    for article in articles:
-        shelf[article.name] = article.name
+def write_aliases_to_shelf(articles: Iterable[Tuple[str, WikipediaCanonicalPage]], shelf):
+    for article_title, article in articles:
+        shelf[article.title] = article_title
         for alias in article.aliases:
-            shelf[alias] = article.title
+            shelf[alias] = article_title
 
 
 global _pool_shelf
